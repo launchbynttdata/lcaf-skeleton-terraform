@@ -1,6 +1,6 @@
 package testimpl
 
-import "github.com/nexient-llc/lcaf-component-terratest-common/types"
+import "github.com/launchbynttdata/lcaf-component-terratest/types"
 
 type ThisTFModuleConfig struct {
 	types.GenericTFModuleConfig

@@ -1,10 +1,10 @@
-module github.com/nexient-llc/tf-module-skeleton
+module github.com/launchbynttdata/lcaf-skeleton-terraform
 
-go 1.20
+go 1.21
 
 require (
 	github.com/gruntwork-io/terratest v0.43.12
-	github.com/nexient-llc/lcaf-component-terratest-common v1.0.3
+	github.com/launchbynttdata/lcaf-component-terratest v1.0.3
 	github.com/stretchr/testify v1.8.1
 )
 

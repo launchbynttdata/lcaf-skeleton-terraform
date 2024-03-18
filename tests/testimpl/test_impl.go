@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/gruntwork-io/terratest/modules/terraform"
-	"github.com/nexient-llc/lcaf-component-terratest-common/types"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -23,7 +23,7 @@ func TestComposableComplete(t *testing.T, ctx types.TestContext) {
 		// Output contains only alphanumeric characters and 🍰
 		assert.Regexp(t, regexp.MustCompile("^[A-Za-z🍰0-9]+$"), output)
 
-		// Other tests would go here and can use functions from lcaf-component-terratest-common.
+		// Other tests would go here and can use functions from lcaf-component-terratest.
 		// Examples (from lambda):
 		// functionName := terraform.Output(t, ctx.TerratestTerraformOptions, "function_name")
 		// require.NotEmpty(t, functionName, "name of deployed lambda should be set")
