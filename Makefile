@@ -51,7 +51,7 @@ MISE_INSTALLED = $(shell which mise > /dev/null 2>&1; echo $$?)
 ASDF_INSTALLED = $(shell which asdf > /dev/null 2>&1; echo $$?)
 REPO_INSTALLED = $(shell which repo > /dev/null 2>&1; echo $$?)
 GIT_USER_SET = $(shell git config --get user.name > /dev/null 2>&1; echo $$?)
-GIT_EMAIL_SET = $(shell git config --get user.name > /dev/null 2>&1; echo $$?)
+GIT_EMAIL_SET = $(shell git config --get user.email > /dev/null 2>&1; echo $$?)
 
 .PHONY: configure-git-hooks
 configure-git-hooks: configure-dependencies
