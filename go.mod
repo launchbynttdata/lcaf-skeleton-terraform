@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/gruntwork-io/terratest v0.43.12
-	github.com/launchbynttdata/lcaf-component-terratest v1.0.3
+	github.com/launchbynttdata/lcaf-component-terratest v1.0.4
 	github.com/stretchr/testify v1.8.1
 )
 
