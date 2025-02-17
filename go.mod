@@ -1,6 +1,6 @@
 module github.com/launchbynttdata/lcaf-skeleton-terraform
 
-go 1.22
+go 1.22.10
 
 require (
 	github.com/gruntwork-io/terratest v0.43.12
