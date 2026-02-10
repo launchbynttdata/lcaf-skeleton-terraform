@@ -105,6 +105,13 @@ When run, `make` will look for a file called `.lcafenv` in the repository root. 
 - Relative path is highly discouraged in Go, use absolute path to import a package
   - (e.g. `github.com/launchbynttdata/lcaf-skeleton-terraform/[path_to_file]`)
 - To update paths or versions run the command: `go get -t ./...`  go will update the dependencies accordingly
+
+### Workflows
+
+This skeleton includes workflows to check both an AWS and an Azure Terraform module using our launch-workflows repository's reusable workflows. Depending on which cloud you intend to target, you will need to remove the workflow of the opposite cloud once you copy these files into your own repository. You should also remove the `if` that prevents them from running against this repository.
+
+The `launchbynttdata` organization has the appropriate secrets and variables set for these workflows, but if you intend to use them outside of the `launchbynttdata` organization, you may need to configure secrets and variables for your use case. See the [documentation in launch-workflows](https://github.com/launchbynttdata/launch-workflows/tree/main/docs) for more details specific to your desired workflow.
+
 <!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->
 ## Requirements
 
