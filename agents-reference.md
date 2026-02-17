@@ -1,7 +1,16 @@
+<!-- version: 1.1 -->
+
 # AI Agent Guide for Reference Architecture Modules
 
 > **This guide is for reference architecture modules** that compose multiple primitive modules.
 > For primitive modules (single resource wrappers), see [agents-primitive.md](./agents-primitive.md)
+
+## Changelog
+
+- **1.1** – Added cloud provider API verification patterns (Azure, AWS, GCP) to Terratest guidance; tests must now verify real resource state via provider SDKs, not just Terraform outputs; reference architecture tests must also cover optional features enabled in the example
+- **1.0** – Initial release
+
+> **For agents working in the skeleton repo (`lcaf-skeleton-terraform`):** If you modify this file, update the `<!-- version -->` comment at the top and add a changelog entry here. Bump the minor version (e.g. 1.1 → 1.2) for new guidance or clarifications; bump the major version (e.g. 1.x → 2.0) for changes that would require significant rework of existing modules.
 
 ## Overview
 
