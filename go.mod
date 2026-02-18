@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	github.com/gruntwork-io/terratest v0.49.0
 	github.com/launchbynttdata/lcaf-component-terratest v1.0.4
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 )
 
 require (
