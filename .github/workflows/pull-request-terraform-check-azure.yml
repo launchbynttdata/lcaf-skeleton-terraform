@@ -1,0 +1,21 @@
+name: Check Azure Terraform Code
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    name: "Check Azure Terraform Code"
+    # Remove the following line after copying to your own repository
+    if: github.event.pull_request.head.repo.full_name != 'launchbynttdata/lcaf-skeleton-terraform'
+    permissions:
+      contents: read
+      id-token: write
+    uses: launchbynttdata/launch-workflows/.github/workflows/reusable-terraform-check-azure.yml@0.14.0
+    secrets: inherit # pragma: allowlist secret
