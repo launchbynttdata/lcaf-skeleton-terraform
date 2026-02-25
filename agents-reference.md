@@ -1,4 +1,4 @@
-<!-- version: 1.1 -->
+<!-- version: 1.2 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -7,6 +7,7 @@
 
 ## Changelog
 
+- **1.2** – Fixed resource naming module usage: `for_each = var.resource_names_map` (not a module input), correct variable name `class_env` (not `environment`), added required `cloud_resource_type`/`maximum_length` params, corrected output reference syntax to `module.resource_names["key"].format`, noted hyphens-stripping for AWS regions, replaced incorrect `resource_names_strategy` variable pattern with correct per-resource output format selection
 - **1.1** – Added cloud provider API verification patterns (Azure, AWS, GCP) to Terratest guidance; tests must now verify real resource state via provider SDKs, not just Terraform outputs; reference architecture tests must also cover optional features enabled in the example
 - **1.0** – Initial release
 
@@ -87,47 +88,66 @@ tf-<provider>-module_reference-<architecture>/
 
 ### Always Use the Resource Naming Module
 
-Every reference architecture should start with the resource naming module:
+Every reference architecture should start with the resource naming module.
+
+`resource_names_map` is used as `for_each` — the module is invoked once per resource type. The map key (e.g. `"resource_group"`, `"postgresql_server"`) becomes the instance key used to retrieve the generated name. Each instance produces multiple output formats (`standard`, `minimal_random_suffix`, `dns_compliant_standard`, etc.) — choose the appropriate format per resource in your locals or inline.
+
+**Azure pattern:**
 ```hcl
 module "resource_names" {
-  source  = "terraform.registry.launch.nttdata.com/module_library/resource_name/launch"
-  version = "~> 2.0"
+  source   = "terraform.registry.launch.nttdata.com/module_library/resource_name/launch"
+  version  = "~> 2.0"
 
-  resource_names_map = var.resource_names_map
-  
-  # Azure-specific
-  region             = var.location
-  
-  # AWS/GCP use data source
-  # region is obtained from data.aws_region.current.name
-  
-  environment        = var.class_env
-  instance_env       = var.instance_env
-  instance_resource  = var.instance_resource
-  
+  for_each = var.resource_names_map
+
   logical_product_family  = var.logical_product_family
   logical_product_service = var.logical_product_service
-  
-  # Azure-specific
-  use_azure_region_abbr   = var.use_azure_region_abbr
+  class_env               = var.class_env
+  instance_env            = var.instance_env
+  instance_resource       = var.instance_resource
+  cloud_resource_type     = each.value.name
+  maximum_length          = each.value.max_length
+
+  # Azure region names have no hyphens (e.g. "eastus"), so pass directly
+  region                = var.location
+  use_azure_region_abbr = var.use_azure_region_abbr
 }
 ```
 
-**Why:** Ensures consistent naming across all resources in the architecture.
-
-**AWS Pattern - Region Data Source:**
+**AWS pattern:**
 ```hcl
 data "aws_region" "current" {}
 
 module "resource_names" {
-  source  = "terraform.registry.launch.nttdata.com/module_library/resource_name/launch"
-  version = "~> 2.0"
+  source   = "terraform.registry.launch.nttdata.com/module_library/resource_name/launch"
+  version  = "~> 2.0"
 
-  resource_names_map = var.resource_names_map
-  region             = data.aws_region.current.name  # From data source
-  # ... other variables
+  for_each = var.resource_names_map
+
+  logical_product_family  = var.logical_product_family
+  logical_product_service = var.logical_product_service
+  class_env               = var.class_env
+  instance_env            = var.instance_env
+  instance_resource       = var.instance_resource
+  cloud_resource_type     = each.value.name
+  maximum_length          = each.value.max_length
+
+  # AWS regions have hyphens (e.g. "us-east-1") — strip them so they don't
+  # appear as extra separators in generated names
+  region = join("", split("-", data.aws_region.current.name))
 }
 ```
+
+**Referencing generated names:**
+```hcl
+# Syntax: module.resource_names["<map_key>"].<output_format>
+module.resource_names["resource_group"].standard          # e.g. "launch-database-eus-dev-rg-000"
+module.resource_names["postgresql_server"].standard       # e.g. "launch-database-eus-dev-psql-000"
+module.resource_names["s3_bucket"].minimal_random_suffix  # e.g. "launch-bkt-5823947201" (for globally unique names)
+module.resource_names["lambda_function"].dns_compliant_standard  # for DNS-constrained names
+```
+
+**Why:** Ensures consistent naming across all resources in the architecture.
 
 ### Create Resource Group (Azure Only)
 
@@ -137,7 +157,7 @@ module "resource_group" {
   source  = "terraform.registry.launch.nttdata.com/module_primitive/resource_group/azurerm"
   version = "~> 1.0"
 
-  name     = module.resource_names.standard.resource_group
+  name     = module.resource_names["resource_group"].standard
   location = var.location
   tags     = var.tags
 }
@@ -161,7 +181,7 @@ module "postgresql_server" {
   source  = "terraform.registry.launch.nttdata.com/module_primitive/postgresql_server/azurerm"
   version = "~> 1.1"
 
-  name                = module.resource_names.standard.postgresql_server
+  name                = module.resource_names["postgresql_server"].standard
   resource_group_name = module.resource_group.name
   location            = var.location
 
@@ -190,7 +210,7 @@ module "s3_bucket" {
   source  = "terraform.registry.launch.nttdata.com/module_primitive/s3_bucket/aws"
   version = "~> 1.0"
 
-  bucket = module.resource_names.standard.s3_bucket
+  bucket = module.resource_names["s3_bucket"].minimal_random_suffix  # S3 bucket names are globally unique
   
   # Pass through configuration
   versioning_enabled = var.versioning_enabled
@@ -208,7 +228,7 @@ module "lambda_function" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 7.4"
 
-  function_name = module.resource_names[local.resource_names_strategy].lambda_function
+  function_name = module.resource_names["lambda_function"].minimal_random_suffix
   description   = var.description
   handler       = var.handler
   runtime       = var.runtime
@@ -268,7 +288,7 @@ module "lambda_iam_role" {
   version = "~> 1.0"
   count   = var.create_iam_role ? 1 : 0
 
-  name               = module.resource_names.standard.iam_role
+  name               = module.resource_names["iam_role"].standard
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
   
   tags = var.tags
@@ -284,12 +304,12 @@ module "private_endpoint" {
   version = "~> 1.0"
   count   = var.create_private_endpoint ? 1 : 0
 
-  name                = module.resource_names.standard.private_endpoint
+  name                = module.resource_names["private_endpoint"].standard
   resource_group_name = module.resource_group.name
   location            = var.location
   subnet_id           = var.private_endpoint_subnet_id
 
-  private_service_connection_name = module.resource_names.standard.private_service_connection
+  private_service_connection_name = module.resource_names["private_service_connection"].standard
   private_connection_resource_id  = module.postgresql_server.id
   is_manual_connection            = var.private_endpoint_is_manual_connection
   subresource_names               = var.private_endpoint_subresource_names
@@ -342,7 +362,7 @@ module "monitor_metric_alert" {
   version  = "~> 2.0"
   for_each = var.metric_alerts
 
-  name                = "${module.resource_names.standard.postgresql_server}-${each.key}"
+  name                = "${module.resource_names["postgresql_server"].standard}-${each.key}"
   resource_group_name = var.resource_group_name != "" ? var.resource_group_name : module.resource_group.name
   scopes              = [module.postgresql_server.id]
 
@@ -448,24 +468,23 @@ variable "resource_names_map" {
 }
 ```
 
-**AWS-specific addition - Resource Names Strategy:**
+**Choosing the right output format per resource:**
+
+Each `module.resource_names` instance exposes multiple output formats. Choose the right one per resource in locals:
 ```hcl
-variable "resource_names_strategy" {
-  description = "Strategy to use for generating resource names, e.g. 'standard', 'minimal_random_suffix', 'dns_compliant_standard'"
-  type        = string
-  default     = "minimal_random_suffix"
+locals {
+  # Most resources: use standard
+  iam_role_name    = module.resource_names["iam_role"].standard
+
+  # Globally unique resources (S3 buckets, etc.): use minimal_random_suffix
+  s3_bucket_name   = module.resource_names["s3_bucket"].minimal_random_suffix
+
+  # Resources with DNS naming constraints: use dns_compliant_* variants
+  lambda_name      = module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix
 }
 ```
 
-**Usage in locals.tf:**
-```hcl
-locals {
-  resource_names_strategy = var.resource_names_strategy
-  
-  # Access names using strategy
-  lambda_name = module.resource_names[local.resource_names_strategy].lambda_function
-}
-```
+Available output formats: `standard`, `lower_case`, `upper_case`, `minimal`, `minimal_random_suffix`, `dns_compliant_standard`, `dns_compliant_minimal`, `dns_compliant_minimal_random_suffix`, `camel_case`, `recommended_per_length_restriction`.
 
 ### Naming Context Variables
 
@@ -770,12 +789,11 @@ locals {
 **AWS example:**
 ```hcl
 locals {
-  resource_names_strategy = var.resource_names_strategy
-  
-  # Compute function name based on strategy
-  function_name = module.resource_names[local.resource_names_strategy].lambda_function
-  
-  # Determine IAM role
+  # Pick the appropriate output format per resource type
+  function_name   = module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix
+  iam_role_name   = module.resource_names["iam_role"].standard
+
+  # Determine IAM role ARN
   lambda_role_arn = var.create_iam_role ? module.lambda_iam_role[0].arn : var.existing_iam_role_arn
 }
 ```
@@ -785,7 +803,7 @@ locals {
 - Data transformations
 - Combining lists or maps
 - Default value computation
-- Strategy-based selections (AWS pattern)
+- Selecting the right resource name output format per resource
 
 ## Provider-Specific Patterns
 
@@ -804,7 +822,7 @@ module "resource_group" {
   version = "~> 1.0"
   count   = var.resource_group_name == "" ? 1 : 0
 
-  name     = module.resource_names.standard.resource_group
+  name     = module.resource_names["resource_group"].standard
   location = var.location
   tags     = var.tags
 }
@@ -833,15 +851,15 @@ data "aws_region" "current" {}
 # Use data.aws_region.current.name in modules
 ```
 
-**Resource Names Strategy:**
+**Selecting naming output format in locals:**
 ```hcl
-variable "resource_names_strategy" {
-  type    = string
-  default = "minimal_random_suffix"
-}
-
 locals {
-  function_name = module.resource_names[var.resource_names_strategy].lambda_function
+  # Use the output format appropriate to each resource's constraints:
+  # - .standard for most resources
+  # - .minimal_random_suffix for globally unique resources (S3, ECR, etc.)
+  # - .dns_compliant_* for DNS-constrained resources
+  function_name = module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix
+  bucket_name   = module.resource_names["s3_bucket"].minimal_random_suffix
 }
 ```
 
@@ -1172,9 +1190,6 @@ module "lambda_reference" {
   instance_env            = 0
   instance_resource       = 0
 
-  # Resource naming strategy
-  resource_names_strategy = "minimal_random_suffix"
-
   # Core Lambda configuration
   runtime      = "python3.9"
   handler      = "index.lambda_handler"
@@ -1311,16 +1326,19 @@ locals {
 }
 ```
 
-### Pattern: Resource Names Strategy (AWS)
-```hcl
-variable "resource_names_strategy" {
-  type    = string
-  default = "minimal_random_suffix"
-}
+### Pattern: Resource Names Output Format (AWS)
 
+The `resource_names` module outputs multiple name formats per resource. Select the right one per resource in locals:
+```hcl
 locals {
-  resource_names_strategy = var.resource_names_strategy
-  lambda_name = module.resource_names[local.resource_names_strategy].lambda_function
+  # Standard: most Azure and AWS resources
+  rg_name       = module.resource_names["resource_group"].standard
+
+  # Minimal with random suffix: globally unique resources (S3, ECR, etc.)
+  bucket_name   = module.resource_names["s3_bucket"].minimal_random_suffix
+
+  # DNS-compliant: resources with DNS naming constraints (Lambda, ECS, etc.)
+  lambda_name   = module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix
 }
 ```
 
@@ -1438,8 +1456,7 @@ Based on comparing Azure and AWS modules, older modules may need:
    - Ensure using `version = "~> 2.0"`
 
 3. **AWS-specific additions**
-   - Add `resource_names_strategy` variable
-   - Use `locals` for strategy-based name selection
+   - Use `locals` to select the appropriate output format per resource (`.standard`, `.minimal_random_suffix`, `.dns_compliant_*`)
 
 4. **Consistent patterns**
    - Use `count` for optional features

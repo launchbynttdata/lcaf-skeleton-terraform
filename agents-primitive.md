@@ -1,4 +1,4 @@
-<!-- version: 1.1 -->
+<!-- version: 1.2 -->
 
 # AI Agent Guide for Terraform Primitive Modules
 
@@ -6,6 +6,7 @@ This document provides context and instructions for AI coding assistants working
 
 ## Changelog
 
+- **1.2** – Fixed resource naming module usage: `for_each = var.resource_names_map` (not a module input), correct variable name `class_env` (not `environment`), added required `cloud_resource_type`/`maximum_length` params, corrected output reference syntax to `module.resource_names["key"].format`, noted hyphens-stripping for AWS regions
 - **1.1** – Added cloud provider API verification patterns (Azure, AWS, GCP) to Terratest guidance; tests must now verify real resource state via provider SDKs, not just Terraform outputs
 - **1.0** – Initial release
 
@@ -474,30 +475,41 @@ examples/complete/
 **Example main.tf pattern:**
 ```hcl
 # All providers use resource naming module
+# resource_names_map is used as for_each - the module is called once per resource type.
+# The map key becomes the instance key (e.g. "resource_group", "postgresql_server").
 module "resource_names" {
-  source  = "terraform.registry.launch.nttdata.com/module_library/resource_name/launch"
-  version = "~> 2.0"
+  source   = "terraform.registry.launch.nttdata.com/module_library/resource_name/launch"
+  version  = "~> 2.0"
 
-  resource_names_map = var.resource_names_map
-  
-  # Azure-specific
-  region             = var.location
-  # AWS/GCP use data sources for region
-  
-  environment        = var.class_env
-  instance_env       = var.instance_env
-  instance_resource  = var.instance_resource
-  
+  for_each = var.resource_names_map
+
   logical_product_family  = var.logical_product_family
   logical_product_service = var.logical_product_service
+  class_env               = var.class_env
+  instance_env            = var.instance_env
+  instance_resource       = var.instance_resource
+  cloud_resource_type     = each.value.name
+  maximum_length          = each.value.max_length
+
+  # Azure: pass location directly (no hyphens in Azure region names)
+  region                = var.location
+  use_azure_region_abbr = var.use_azure_region_abbr
+
+  # AWS/GCP: strip hyphens from region (e.g. "us-east-1" -> "useast1")
+  # region = join("", split("-", data.aws_region.current.name))
 }
+
+# Reference names by map key and desired output format:
+#   module.resource_names["resource_group"].standard
+#   module.resource_names["postgresql_server"].standard
+#   module.resource_names["s3_bucket"].minimal_random_suffix  (AWS - globally unique)
 
 # Azure example - create resource group
 module "resource_group" {
   source  = "terraform.registry.launch.nttdata.com/module_primitive/resource_group/azurerm"
   version = "~> 1.0"
 
-  name     = module.resource_names.standard.resource_group
+  name     = module.resource_names["resource_group"].standard
   location = var.location
   tags     = var.tags
 }
@@ -506,7 +518,7 @@ module "resource_group" {
 module "postgres" {  # or "bucket", "lambda", etc.
   source = "../.."
 
-  name                = module.resource_names.standard.postgresql_server
+  name                = module.resource_names["postgresql_server"].standard
   resource_group_name = module.resource_group.name  # Azure
   location            = var.location                  # Azure
   # OR for AWS:
