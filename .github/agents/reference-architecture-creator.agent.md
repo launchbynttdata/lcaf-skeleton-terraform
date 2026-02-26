@@ -1,9 +1,9 @@
-<!-- version: 1.3 -->
-
 ---
 name: Terraform Reference Architecture Creator
 description: Agent that creates a Terraform Reference Architecture from a skeleton repository to meet our standards.
 ---
+
+<!-- version: 1.4 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -12,6 +12,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 ## Changelog
 
+- **1.4** – Fixed version header (block must come first to be recognized as an agent)
 - **1.3** – Added agent header, migrated to agents folder, added skeleton cleanup checklist.
 - **1.2** – Fixed resource naming module usage: `for_each = var.resource_names_map` (not a module input), correct variable name `class_env` (not `environment`), added required `cloud_resource_type`/`maximum_length` params, corrected output reference syntax to `module.resource_names["key"].format`, noted hyphens-stripping for AWS regions, replaced incorrect `resource_names_strategy` variable pattern with correct per-resource output format selection
 - **1.1** – Added cloud provider API verification patterns (Azure, AWS, GCP) to Terratest guidance; tests must now verify real resource state via provider SDKs, not just Terraform outputs; reference architecture tests must also cover optional features enabled in the example
