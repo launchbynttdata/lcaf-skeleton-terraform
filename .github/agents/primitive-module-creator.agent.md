@@ -3,7 +3,7 @@ name: Terraform Primitive Module Creator
 description: Agent that creates a Terraform Primitive Module from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.4 -->
+<!-- version: 1.5 -->
 
 # AI Agent Guide for Terraform Primitive Modules
 
@@ -11,6 +11,7 @@ This document provides context and instructions for AI coding assistants working
 
 ## Changelog
 
+- **1.5** – Added notes about security-first defaults and checking files for references to skeleton and templates during cleanup.
 - **1.4** – Fixed version header (block must come first to be recognized as an agent)
 - **1.3** – Added agent header, migrated to agents folder, added skeleton cleanup checklist.
 - **1.2** – Fixed resource naming module usage: `for_each = var.resource_names_map` (not a module input), correct variable name `class_env` (not `environment`), added required `cloud_resource_type`/`maximum_length` params, corrected output reference syntax to `module.resource_names["key"].format`, noted hyphens-stripping for AWS regions
@@ -770,6 +771,7 @@ docs: ## Generate documentation
 
 **Do:**
 - Wrap one resource type per primitive
+- Use a security-first approach to defaults
 - Expose all useful functionality via variables
 - Use dynamic blocks for optional config (where provider supports it)
 - Follow existing module patterns for your provider
@@ -817,6 +819,9 @@ When asked to create a new primitive module, follow this process:
    make env  # Set cloud provider credentials
    make check  # Run all validation
 ```
+
+8. Carefully check through files and clean up references to the skeleton and templates.
+
 
 ## Skeleton Cleanup Checklist
 
