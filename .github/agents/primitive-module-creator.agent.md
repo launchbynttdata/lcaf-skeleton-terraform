@@ -1,4 +1,9 @@
-<!-- version: 1.2 -->
+<!-- version: 1.3 -->
+
+---
+name: Terraform Primitive Module Creator
+description: Agent that creates a Terraform Primitive Module from a skeleton repository to meet our standards.
+---
 
 # AI Agent Guide for Terraform Primitive Modules
 
@@ -6,6 +11,7 @@ This document provides context and instructions for AI coding assistants working
 
 ## Changelog
 
+- **1.3** – Added agent header, migrated to agents folder, added skeleton cleanup checklist.
 - **1.2** – Fixed resource naming module usage: `for_each = var.resource_names_map` (not a module input), correct variable name `class_env` (not `environment`), added required `cloud_resource_type`/`maximum_length` params, corrected output reference syntax to `module.resource_names["key"].format`, noted hyphens-stripping for AWS regions
 - **1.1** – Added cloud provider API verification patterns (Azure, AWS, GCP) to Terratest guidance; tests must now verify real resource state via provider SDKs, not just Terraform outputs
 - **1.0** – Initial release
@@ -811,9 +817,24 @@ When asked to create a new primitive module, follow this process:
    make check  # Run all validation
 ```
 
+## Skeleton Cleanup Checklist
+
+When transforming the skeleton into a new primitive module, complete ALL of these steps:
+
+### Files to Remove or Transform
+- [ ] **TEMPLATED_README.md** → Delete after incorporating relevant content into README.md
+- [ ] **Only one Terraform Check CI workflow can be present** (`.github/workflows/pull-request-terraform-check-*.yml`) → Remove Azure for AWS module, remove AWS for Azure module, etc. Keep the one that matches your provider.
+- [ ] **`examples/with_cake/`** → Delete skeleton example directory
+
+### Files to Update
+- [ ] **`go.mod`** → Update the `lcaf-skeleton-terraform` portion of the `github.com/launchbynttdata/lcaf-skeleton-terraform` header to your module name
+- [ ] **Test imports** → Update all Go import paths to match new `go.mod` module path
+- [ ] **CI workflow skeleton guard** → Remove the `if: github.repository != 'launchbynttdata/lcaf-skeleton-terraform'` condition from all workflow files
+- [ ] **README.md** → Replace Azure-specific references (ARM_CLIENT_ID, azure_env.sh, azurerm provider) with provider-appropriate content
+
 ## Cross-Reference
 
-For reference architecture patterns, see [agents-reference.md](./agents-reference.md)
+For reference architecture patterns, see [reference-architecture-creator.agent.md](./reference-architecture-creator.agent.md)
 
 These shared standards apply to both primitives and references:
 - Commit message formats
