@@ -17,5 +17,5 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: launchbynttdata/launch-workflows/.github/workflows/reusable-terraform-check-azure.yml@0.14.0
+    uses: launchbynttdata/launch-workflows/.github/workflows/reusable-terraform-check-azure.yml@0.14.1
     secrets: inherit # pragma: allowlist secret
