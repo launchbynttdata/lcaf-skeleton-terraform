@@ -8,7 +8,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 # AI Agent Guide for Reference Architecture Modules
 
 > **This guide is for reference architecture modules** that compose multiple primitive modules.
-> For primitive modules (single resource wrappers), see [agents-primitive.md](./agents-primitive.md)
+> For primitive modules (single resource wrappers), see [primitive-module-creator.agent.md](./primitive-module-creator.agent.md)
 
 ## Changelog
 
@@ -1487,7 +1487,7 @@ When transforming the skeleton into a new primitive module, complete ALL of thes
 
 ## Cross-Reference
 
-For primitive module patterns, see [agents-primitive.md](./agents-primitive.md)
+For primitive module patterns, see [primitive-module-creator.agent.md](./primitive-module-creator.agent.md)
 
 These shared standards apply to both primitives and references:
 - Commit message formats
