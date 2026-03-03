@@ -20,6 +20,8 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 > **For agents working in the skeleton repo (`lcaf-skeleton-terraform`):** If you modify this file, update the `<!-- version -->` comment at the top and add a changelog entry here. Bump the minor version (e.g. 1.1 → 1.2) for new guidance or clarifications; bump the major version (e.g. 1.x → 2.0) for changes that would require significant rework of existing modules.
 
+> **Maintenance rule — keep guidance generic.** This guide applies to ALL reference architecture modules across all cloud providers, not just the resource type used in any particular experiment. When updating this file, do not embed service-specific attribute names into patterns meant to be universal. If a concrete example helps clarify a pattern, show one per cloud provider and label each clearly (e.g., "Azure example," "AWS example," "GCP example"). Prefer generic placeholders like `<resource-specific attribute>` in comparisons and checklists.
+
 ## Overview
 
 Reference architecture modules compose multiple primitive modules to implement complete infrastructure patterns with opinionated configurations, best practices, and additional capabilities like monitoring and private networking.
