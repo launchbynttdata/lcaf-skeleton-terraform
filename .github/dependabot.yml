@@ -4,27 +4,22 @@ multi-ecosystem-groups:
   module:
     schedule:
       interval: "weekly"
-    labels: ["dependencies"]
   workflows:
     schedule:
       interval: "weekly"
-    labels: ["dependencies"]
 
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     multi-ecosystem-group: "workflows"
     patterns: ["*"]
-    labels: ["dependencies"]
 
   - package-ecosystem: "gomod"
     directory: "/"
     multi-ecosystem-group: "module"
     patterns: ["*"]
-    labels: ["dependencies"]
 
   - package-ecosystem: "terraform"
     directory: "/"
     multi-ecosystem-group: "module"
     patterns: ["*"]
-    labels: ["dependencies"]
