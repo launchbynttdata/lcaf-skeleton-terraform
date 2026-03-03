@@ -3,7 +3,7 @@ name: Terraform Primitive Module Creator
 description: Agent that creates a Terraform Primitive Module from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.5 -->
+<!-- version: 1.6 -->
 
 # AI Agent Guide for Terraform Primitive Modules
 
@@ -11,6 +11,7 @@ This document provides context and instructions for AI coding assistants working
 
 ## Changelog
 
+- **1.6** – Strengthened guidance based on trial feedback: added explicit skeleton TODO/placeholder cleanup, readonly test differentiation, terraform-docs generation step, output description requirement, input validation requirements for bounded numerics, mutually exclusive parameter handling, security-first example defaults (KMS/Regula), output naming convention, and example completeness expectations.
 - **1.5** – Added notes about security-first defaults and checking files for references to skeleton and templates during cleanup.
 - **1.4** – Fixed version header (block must come first to be recognized as an agent)
 - **1.3** – Added agent header, migrated to agents folder, added skeleton cleanup checklist.
@@ -221,6 +222,24 @@ variable "tags" {
 - Tags: always include, default to empty map `{}`
 - Complex objects: use `object()` with `optional()` fields
 - Multi-line descriptions: use heredoc `<<-EOT ... EOT`
+- **Validation blocks are REQUIRED** for all bounded numerical inputs (e.g., timeouts, sizes, retention periods). Always add `validation {}` blocks when the cloud provider API enforces value ranges. Example:
+  ```hcl
+  variable "visibility_timeout_seconds" {
+    description = "Visibility timeout in seconds."
+    type        = number
+    default     = 30
+
+    validation {
+      condition     = var.visibility_timeout_seconds >= 0 && var.visibility_timeout_seconds <= 43200
+      error_message = "Must be between 0 and 43200 seconds."
+    }
+  }
+  ```
+- **Mutually exclusive parameters:** When two variables cannot be used simultaneously (e.g., `sqs_managed_sse_enabled` and `kms_master_key_id`), add a `validation` block or use conditional logic in `main.tf` to prevent conflicts. Example:
+  ```hcl
+  # In main.tf - use conditional to resolve mutual exclusion:
+  sqs_managed_sse_enabled = var.kms_master_key_id == null ? var.sqs_managed_sse_enabled : false
+  ```
 
 **Provider-specific common variables:**
 
@@ -316,43 +335,64 @@ resource "aws_s3_bucket_versioning" "bucket" {
 - No data sources unless essential
 - **AWS-specific:** Often uses separate resources instead of nested blocks
 
+**Feature completeness:** A primitive module must expose ALL commonly-used attributes of the resource as variables. "Commonly-used" means any attribute that a typical production deployment would configure. Consult the Terraform provider documentation for the resource and expose every non-deprecated, non-computed argument. Optional attributes should default to `null` so they are omitted from the API call unless explicitly set. Do NOT create a minimal wrapper — the primitive must be a comprehensive, production-ready resource wrapper.
+
 ### outputs.tf
 
 **Your actual pattern:**
 ```hcl
 output "id" {
-  value = azurerm_postgresql_flexible_server.postgres.id
+  description = "The ID of the resource."
+  value       = azurerm_postgresql_flexible_server.postgres.id
   # OR
-  value = aws_s3_bucket.bucket.id
+  value       = aws_s3_bucket.bucket.id
 }
 
 output "name" {
-  value = azurerm_postgresql_flexible_server.postgres.name
+  description = "The name of the resource."
+  value       = azurerm_postgresql_flexible_server.postgres.name
   # OR
-  value = aws_s3_bucket.bucket.bucket
+  value       = aws_s3_bucket.bucket.bucket
 }
 
 output "arn" {  # AWS-specific
-  value = aws_s3_bucket.bucket.arn
+  description = "The ARN of the resource."
+  value       = aws_s3_bucket.bucket.arn
 }
 
 output "fqdn" {  # Common for databases
-  value = azurerm_postgresql_flexible_server.postgres.fqdn
+  description = "The FQDN of the resource."
+  value       = azurerm_postgresql_flexible_server.postgres.fqdn
 }
 
 # Export important attributes individually
 output "primary_endpoint" {
-  value = azurerm_storage_account.storage.primary_blob_endpoint
+  description = "The primary blob endpoint of the storage account."
+  value       = azurerm_storage_account.storage.primary_blob_endpoint
 }
 ```
 
 **Key patterns:**
 - Export critical attributes individually
-- Simple value references, no `description` fields
+- Simple value references with short `description` fields (required for `terraform-docs` to generate useful documentation)
 - No `sensitive = true` flags (handle in calling code)
 - Export enough for composition, but not necessarily everything
 - No complete resource object output
 - **Provider-specific outputs:** ARNs (AWS), FQDNs (Azure), etc.
+- **Output naming:** Use short, generic names without resource-type prefixes. Use `id`, `arn`, `name`, `url` — NOT `queue_id`, `queue_arn`, etc. The module context already implies the resource type.
+
+**Example with descriptions:**
+```hcl
+output "id" {
+  description = "The ID of the resource."
+  value       = aws_sqs_queue.queue.id
+}
+
+output "arn" {
+  description = "The ARN of the resource."
+  value       = aws_sqs_queue.queue.arn
+}
+```
 
 ### versions.tf
 
@@ -545,6 +585,9 @@ module "postgres" {  # or "bucket", "lambda", etc.
 - Create required dependencies (resource group for Azure)
 - Use `source = "../.."` to reference parent module
 - Pass through variables, minimal hardcoding
+- **The example must demonstrate ALL module variables** — every variable defined in the root module's `variables.tf` should be passed through in the example. This ensures the example serves as complete documentation and that all features are tested.
+- **Security-first example defaults:** The example's `test.tfvars` and `variables.tf` defaults must use the MOST SECURE configuration option. If the organization's Regula/OPA policies flag a security concern (e.g., SQS queues should use KMS encryption, not SQS-managed SSE), the example must demonstrate the secure pattern (e.g., create a KMS key and pass it to the module). The example is the reference implementation — it must pass all organizational policy checks without warnings.
+- **The example's README.md** must accurately reflect the actual `main.tf` code. The usage snippet and Inputs table must match the real example code exactly. Do not write a simplified snippet that omits variables.
 
 ### Terratest (tests/)
 
@@ -718,6 +761,15 @@ func TestResourceComplete(t *testing.T) {
 - Use the provider SDK directly for resources not covered by terratest helpers
 - Assert on specific configuration values (SKU, version, location, encryption settings), not just non-emptiness
 - Read credentials/region from environment variables; fail clearly if required env vars are missing
+- **Security settings must be verified via the cloud API.** If the module has security-related defaults (encryption, access policies, etc.), the test MUST assert those settings are correctly applied via the provider SDK. For example, if SQS encryption defaults to `sqs_managed_sse_enabled = true`, the test must verify `SqsManagedSseEnabled` via the SQS API.
+
+### Functional vs Readonly Tests
+
+The skeleton provides two test directories:
+- `tests/post_deploy_functional/` — Full lifecycle test: creates infrastructure, runs assertions (including write operations like sending messages), then destroys.
+- `tests/post_deploy_functional_readonly/` — Read-only verification: assumes infrastructure already exists, performs ONLY read operations (API queries, attribute checks). **Must NOT send messages, create resources, or modify state.**
+
+**These two test files MUST be different.** The readonly test should call a separate test implementation function (e.g., `TestComposableCompleteReadonly`) that only verifies resource existence and configuration via API reads. Do NOT copy the functional test into the readonly directory.
 
 ## Makefile Standards
 
@@ -768,6 +820,13 @@ docs: ## Generate documentation
 - Create abstractions over provider resources
 - Make assumptions about use cases
 - Mix provider resource patterns (e.g., AWS nested blocks like Azure)
+- Create a minimal wrapper with only a few variables — expose ALL commonly-used resource attributes
+- Leave TODO placeholders or skeleton comments in any file
+- Copy the functional test into the readonly test directory unchanged
+- Leave the terraform-docs section empty in README.md
+- Prefix output names with the resource type (use `id` not `queue_id`)
+- Pass mutually exclusive parameters unconditionally (use conditionals or validation)
+- Skip input validation blocks for bounded numerical parameters
 
 **Do:**
 - Wrap one resource type per primitive
@@ -778,6 +837,11 @@ docs: ## Generate documentation
 - Keep it simple and composable
 - Let reference architectures handle opinions
 - Follow provider best practices for resource structure
+- Add `validation {}` blocks for all numerical inputs with provider-enforced ranges
+- Add short `description` fields on all outputs (for terraform-docs generation)
+- Make the example demonstrate the MOST SECURE configuration pattern
+- Ensure the example passes all organizational Regula/OPA policy checks without warnings
+- Generate terraform-docs (or manually populate the section) before finalizing
 
 ## Creating a New Primitive Module
 
@@ -820,7 +884,13 @@ When asked to create a new primitive module, follow this process:
    make check  # Run all validation
 ```
 
-8. Carefully check through files and clean up references to the skeleton and templates.
+8. **Generate documentation**
+```bash
+   terraform-docs markdown table --output-file README.md --output-mode inject .
+```
+   This populates the `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` section with auto-generated inputs/outputs tables. **Do NOT leave this section empty.** If `terraform-docs` is not available, manually populate the section with an inputs table and outputs table matching the module's `variables.tf` and `outputs.tf`.
+
+9. **Clean up skeleton references.** Carefully check through ALL files and remove references to the skeleton and templates. See the Skeleton Cleanup Checklist below for a complete list of items to check.
 
 
 ## Skeleton Cleanup Checklist
@@ -837,6 +907,14 @@ When transforming the skeleton into a new primitive module, complete ALL of thes
 - [ ] **Test imports** → Update all Go import paths to match new `go.mod` module path
 - [ ] **CI workflow skeleton guard** → Remove the `if: github.repository != 'launchbynttdata/lcaf-skeleton-terraform'` condition from all workflow files
 - [ ] **README.md** → Replace Azure-specific references (ARM_CLIENT_ID, azure_env.sh, azurerm provider) with provider-appropriate content
+
+### Placeholders and TODOs to Remove
+- [ ] **README.md TODO placeholders** → Search for `TODO:` in README.md and either replace with actual content or remove the TODO text. Common placeholder: `TODO: INSERT DOC LINK ABOUT HOOKS` in the detect-secrets-hook section.
+- [ ] **Skeleton comments in test code** → Check `tests/testimpl/types.go` and other test files for comments referencing "skeleton" (e.g., `"Empty: there are no settings for the skeleton module."`). Update these to reference the actual module name.
+- [ ] **Run `go mod tidy`** → After updating `go.mod` and adding new test dependencies, run `go mod tidy` to clean up duplicate or unnecessary dependency entries.
+
+### Tests to Differentiate
+- [ ] **`tests/post_deploy_functional_readonly/main_test.go`** → This file MUST be different from `tests/post_deploy_functional/main_test.go`. The readonly test must call a readonly-specific test function that performs only read operations (no message sends, no resource creation). See the "Functional vs Readonly Tests" section above.
 
 ## Cross-Reference
 
