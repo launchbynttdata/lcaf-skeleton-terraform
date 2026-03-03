@@ -3,7 +3,7 @@ name: Terraform Primitive Module Creator
 description: Agent that creates a Terraform Primitive Module from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.6 -->
+<!-- version: 1.7 -->
 
 # AI Agent Guide for Terraform Primitive Modules
 
@@ -11,6 +11,7 @@ This document provides context and instructions for AI coding assistants working
 
 ## Changelog
 
+- **1.7** – Strengthened frequently-violated requirements based on multi-model trial feedback: added Critical Requirements Checklist, added WRONG/RIGHT examples for test assertions and functional vs readonly tests, added explicit example README accuracy requirements with examples, strengthened security verification requirements, added Pre-Submission Validation Checklist, expanded Makefile skeleton cleanup, clarified output `id` description for resources where id equals another attribute.
 - **1.6** – Strengthened guidance based on trial feedback: added explicit skeleton TODO/placeholder cleanup, readonly test differentiation, terraform-docs generation step, output description requirement, input validation requirements for bounded numerics, mutually exclusive parameter handling, security-first example defaults (KMS/Regula), output naming convention, and example completeness expectations.
 - **1.5** – Added notes about security-first defaults and checking files for references to skeleton and templates during cleanup.
 - **1.4** – Fixed version header (block must come first to be recognized as an agent)
@@ -32,6 +33,30 @@ This organization maintains 250+ Terraform modules following a strict **composit
   - Example: `tf-azurerm-module_reference-postgresql_server`, `tf-aws-module_reference-lambda_function`
 
 You are most likely helping create or modify a **primitive module**.
+
+## Critical Requirements Checklist
+
+> **These are the most frequently violated requirements.** Every item below has been missed by AI agents in testing. Treat each as a hard requirement — failure on any of these is considered a High-severity defect.
+
+1. **Tests MUST assert specific expected values, not just non-emptiness.** Do NOT write `assert.NotEmpty(t, visibilityTimeout)`. Instead write `assert.Equal(t, "30", result.Attributes["VisibilityTimeout"])`. See [Testing Standards: Specific Value Assertions](#specific-value-assertions) for WRONG/RIGHT examples.
+
+2. **Functional and readonly tests MUST be meaningfully different.** The functional test must include write operations (e.g., sending a message to a queue). The readonly test must only read/verify. They must call different test implementation functions. NEVER copy `post_deploy_functional/main_test.go` into `post_deploy_functional_readonly/` unchanged. See [Functional vs Readonly Tests](#functional-vs-readonly-tests).
+
+3. **Security settings MUST be verified via the cloud API in tests.** If the module configures encryption, the test must assert that encryption is enabled via the provider SDK — not just check that a Terraform output is non-empty. Use `require` (not a conditional `if ok`) to ensure the security attribute is present. See [Security Verification in Tests](#security-verification-in-tests).
+
+4. **README.md TODO placeholders MUST be removed.** Search for `TODO:` in ALL files. The skeleton's `TODO: INSERT DOC LINK ABOUT HOOKS` is the most common missed placeholder. Either replace with real content or remove the TODO text entirely.
+
+5. **The terraform-docs section in README.md MUST NOT be empty.** Run `terraform-docs markdown table --output-file README.md --output-mode inject .` or manually populate the section. An empty `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` / `<!-- END OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` block is a defect.
+
+6. **The example README.md usage snippet MUST exactly match `examples/complete/main.tf`.** Do not write a simplified snippet. Do not omit variables. Do not add variables that aren't in the actual code. The Inputs table must list ALL variables from `examples/complete/variables.tf`. The Outputs table must list ALL outputs from `examples/complete/outputs.tf`. See [Example README Accuracy](#example-readme-accuracy).
+
+7. **The example MUST pass through ALL root module variables.** Every variable in the root `variables.tf` must appear in `examples/complete/variables.tf` and be passed to the module call in `examples/complete/main.tf`. Mutually exclusive variables (e.g., `name` vs `name_prefix`) should both be defined with appropriate defaults (`null` for the one not used).
+
+8. **The example MUST use the most secure configuration.** If the organization's Regula/OPA policies would flag a security concern (e.g., "SQS encryption should use KMS keys"), the example must demonstrate the secure pattern (e.g., create a KMS key module and pass it). The example is the reference implementation.
+
+9. **Skeleton remnants MUST be completely removed.** This includes: Makefile `init-clean` target with `TEMPLATED_README.md` references, skeleton comments in `tests/testimpl/types.go`, TODO placeholders in README.md, and all references to `lcaf-skeleton-terraform` outside of `.github/agents/`. See [Skeleton Cleanup Checklist](#skeleton-cleanup-checklist).
+
+10. **Output `id` description must be accurate.** For resources where `id` equals another attribute (e.g., SQS queue `id` is the URL), use a clarifying description like `"The ID of the SQS queue (same as the queue URL)."` — do not use the exact same description as the `url` output.
 
 ## Cloud Providers Supported
 
@@ -380,6 +405,7 @@ output "primary_endpoint" {
 - No complete resource object output
 - **Provider-specific outputs:** ARNs (AWS), FQDNs (Azure), etc.
 - **Output naming:** Use short, generic names without resource-type prefixes. Use `id`, `arn`, `name`, `url` — NOT `queue_id`, `queue_arn`, etc. The module context already implies the resource type.
+- **Output `id` description:** Some cloud resources return the same value for `id` and another attribute (e.g., SQS queue `id` is the queue URL). When this happens, do NOT give the `id` output the same description as the other output. Instead, clarify the overlap: `"The ID of the SQS queue (same as the queue URL)."` This prevents confusion when consumers see two outputs with identical descriptions.
 
 **Example with descriptions:**
 ```hcl
@@ -587,7 +613,18 @@ module "postgres" {  # or "bucket", "lambda", etc.
 - Pass through variables, minimal hardcoding
 - **The example must demonstrate ALL module variables** — every variable defined in the root module's `variables.tf` should be passed through in the example. This ensures the example serves as complete documentation and that all features are tested.
 - **Security-first example defaults:** The example's `test.tfvars` and `variables.tf` defaults must use the MOST SECURE configuration option. If the organization's Regula/OPA policies flag a security concern (e.g., SQS queues should use KMS encryption, not SQS-managed SSE), the example must demonstrate the secure pattern (e.g., create a KMS key and pass it to the module). The example is the reference implementation — it must pass all organizational policy checks without warnings.
-- **The example's README.md** must accurately reflect the actual `main.tf` code. The usage snippet and Inputs table must match the real example code exactly. Do not write a simplified snippet that omits variables.
+- **The example's README.md** must accurately reflect the actual `main.tf` code. The usage snippet and Inputs table must match the real example code exactly. Do not write a simplified snippet that omits variables. See [Example README Accuracy](#example-readme-accuracy) for details.
+
+### Example README Accuracy
+
+> **This is frequently violated.** Models often write a simplified usage snippet that omits variables, or list outputs that don't exist in the actual `outputs.tf`. The example README must be a faithful mirror of the actual example code.
+
+**Requirements:**
+1. The **usage snippet** in the README must contain the EXACT same module calls and variables as `examples/complete/main.tf`. If `main.tf` passes 12 variables to the module, the README snippet must show all 12.
+2. The **Inputs table** must list EVERY variable from `examples/complete/variables.tf` with matching names, types, defaults, and descriptions.
+3. The **Outputs table** must list EVERY output from `examples/complete/outputs.tf`. Do NOT list outputs that don't exist in the code. Do NOT omit outputs that do exist.
+4. Do NOT manually edit content within `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` markers. Let terraform-docs generate it, or write content that exactly matches what terraform-docs would produce.
+5. Do NOT write "See variables.tf for inputs" instead of providing an actual Inputs table.
 
 ### Terratest (tests/)
 
@@ -763,13 +800,97 @@ func TestResourceComplete(t *testing.T) {
 - Read credentials/region from environment variables; fail clearly if required env vars are missing
 - **Security settings must be verified via the cloud API.** If the module has security-related defaults (encryption, access policies, etc.), the test MUST assert those settings are correctly applied via the provider SDK. For example, if SQS encryption defaults to `sqs_managed_sse_enabled = true`, the test must verify `SqsManagedSseEnabled` via the SQS API.
 
+### Specific Value Assertions
+
+> **This is the #1 most common test defect.** Models consistently write `assert.NotEmpty` when they should write `assert.Equal` with a specific expected value. This defeats the purpose of the test.
+
+**WRONG — asserting non-emptiness (will pass even if the value is wrong):**
+```go
+// BAD: These assertions prove nothing about correctness
+visibilityTimeout := result.Attributes["VisibilityTimeout"]
+assert.NotEmpty(t, visibilityTimeout, "Visibility timeout should be set")
+
+messageRetention := result.Attributes["MessageRetentionPeriod"]
+assert.NotEmpty(t, messageRetention, "Message retention should be set")
+
+kmsKeyId := result.Attributes["KmsMasterKeyId"]
+assert.NotEmpty(t, kmsKeyId, "KMS key should be set")
+```
+
+**RIGHT — asserting specific expected values:**
+```go
+// GOOD: These assertions verify the module correctly applied configuration
+assert.Equal(t, "30", result.Attributes["VisibilityTimeout"], "Visibility timeout should match configured value")
+assert.Equal(t, "345600", result.Attributes["MessageRetentionPeriod"], "Message retention should match configured value")
+assert.Equal(t, "262144", result.Attributes["MaximumMessageSize"], "Max message size should match configured value")
+assert.Equal(t, "0", result.Attributes["DelaySeconds"], "Delay should match configured value")
+
+// For values from Terraform outputs, compare against the output:
+expectedKmsKeyID := terraform.Output(t, ctx.TerratestTerraformOptions(), "kms_key_id")
+assert.Equal(t, expectedKmsKeyID, result.Attributes["KmsMasterKeyId"], "KMS key should match Terraform output")
+```
+
+### Security Verification in Tests
+
+> **Do NOT use conditional `if ok` patterns for security attributes.** This causes the test to silently pass when the security attribute is missing entirely — which is the exact failure case you need to catch.
+
+**WRONG — conditional check that silently passes on missing attribute:**
+```go
+// BAD: If KmsMasterKeyId is absent (encryption not configured), the test silently passes
+if kmsMasterKeyId, ok := result.Attributes["KmsMasterKeyId"]; ok {
+    assert.NotEmpty(t, kmsMasterKeyId, "KMS key should be set")
+}
+```
+
+**RIGHT — mandatory check that fails if attribute is missing:**
+```go
+// GOOD: Test fails if encryption is not configured (attribute missing)
+kmsMasterKeyId, ok := result.Attributes["KmsMasterKeyId"]
+require.True(t, ok, "KmsMasterKeyId attribute must be present — encryption may not be configured")
+assert.NotEmpty(t, kmsMasterKeyId, "KMS master key ID should be set for encryption")
+
+// EVEN BETTER: Compare against the expected key from Terraform output
+expectedKeyId := terraform.Output(t, ctx.TerratestTerraformOptions(), "kms_key_id")
+assert.Equal(t, expectedKeyId, kmsMasterKeyId, "KMS key should match the key provisioned by Terraform")
+```
+
 ### Functional vs Readonly Tests
 
 The skeleton provides two test directories:
 - `tests/post_deploy_functional/` — Full lifecycle test: creates infrastructure, runs assertions (including write operations like sending messages), then destroys.
 - `tests/post_deploy_functional_readonly/` — Read-only verification: assumes infrastructure already exists, performs ONLY read operations (API queries, attribute checks). **Must NOT send messages, create resources, or modify state.**
 
-**These two test files MUST be different.** The readonly test should call a separate test implementation function (e.g., `TestComposableCompleteReadonly`) that only verifies resource existence and configuration via API reads. Do NOT copy the functional test into the readonly directory.
+> **This is one of the most commonly violated requirements.** Models frequently produce byte-for-byte identical test files, or tests that call the same implementation function. Both test directories must call DIFFERENT test implementation functions in `tests/testimpl/`.
+
+**WRONG — both test files are identical:**
+```go
+// tests/post_deploy_functional/main_test.go
+func TestComplete(t *testing.T) {
+    testimpl.TestComposableComplete(t, ctx)  // calls same function as readonly
+}
+
+// tests/post_deploy_functional_readonly/main_test.go
+func TestComplete(t *testing.T) {
+    testimpl.TestComposableComplete(t, ctx)  // WRONG: identical to functional
+}
+```
+
+**RIGHT — each test file calls a different implementation function:**
+```go
+// tests/post_deploy_functional/main_test.go
+func TestComplete(t *testing.T) {
+    testimpl.TestComposableComplete(t, ctx)  // includes write operations
+}
+
+// tests/post_deploy_functional_readonly/main_test.go
+func TestComplete(t *testing.T) {
+    testimpl.TestComposableCompleteReadonly(t, ctx)  // read-only checks only
+}
+```
+
+**What makes them different in `tests/testimpl/test_impl.go`:**
+- `TestComposableComplete` — Verifies Terraform outputs, calls cloud API to check configuration, AND performs write operations (e.g., `sqs.SendMessage` + `sqs.ReceiveMessage` for SQS, `s3.PutObject` for S3, etc.)
+- `TestComposableCompleteReadonly` — Verifies Terraform outputs and calls cloud API to check configuration ONLY. No write operations. Focused on verifying resource existence, attributes, and security settings via read-only API calls.
 
 ## Makefile Standards
 
@@ -821,12 +942,16 @@ docs: ## Generate documentation
 - Make assumptions about use cases
 - Mix provider resource patterns (e.g., AWS nested blocks like Azure)
 - Create a minimal wrapper with only a few variables — expose ALL commonly-used resource attributes
-- Leave TODO placeholders or skeleton comments in any file
-- Copy the functional test into the readonly test directory unchanged
-- Leave the terraform-docs section empty in README.md
+- Leave TODO placeholders or skeleton comments in any file (search ALL `.md` and `.go` files for `TODO:` and `skeleton`)
+- Copy the functional test into the readonly test directory unchanged (they MUST call different functions)
+- Leave the terraform-docs section empty in README.md (populate it before finalizing)
 - Prefix output names with the resource type (use `id` not `queue_id`)
 - Pass mutually exclusive parameters unconditionally (use conditionals or validation)
 - Skip input validation blocks for bounded numerical parameters
+- Use `assert.NotEmpty` for configuration values that have known expected values (use `assert.Equal` instead)
+- Use `if ok { assert... }` for security attribute checks (use `require.True(t, ok, ...)` instead)
+- Write a simplified usage snippet in the example README that omits variables from the actual `main.tf`
+- Give two outputs identical descriptions (e.g., both `id` and `url` described as "The URL of the queue")
 
 **Do:**
 - Wrap one resource type per primitive
@@ -842,6 +967,11 @@ docs: ## Generate documentation
 - Make the example demonstrate the MOST SECURE configuration pattern
 - Ensure the example passes all organizational Regula/OPA policy checks without warnings
 - Generate terraform-docs (or manually populate the section) before finalizing
+- Use `assert.Equal` with specific expected values in ALL test assertions for configuration attributes
+- Use `require.True` (not `if ok`) for security-critical API attribute checks in tests
+- Include write operations in the functional test (and exclude them from the readonly test)
+- Verify the example README snippet matches the actual `main.tf` line-for-line before finalizing
+- Walk through the Pre-Submission Validation Checklist before considering the module complete
 
 ## Creating a New Primitive Module
 
@@ -909,12 +1039,61 @@ When transforming the skeleton into a new primitive module, complete ALL of thes
 - [ ] **README.md** → Replace Azure-specific references (ARM_CLIENT_ID, azure_env.sh, azurerm provider) with provider-appropriate content
 
 ### Placeholders and TODOs to Remove
-- [ ] **README.md TODO placeholders** → Search for `TODO:` in README.md and either replace with actual content or remove the TODO text. Common placeholder: `TODO: INSERT DOC LINK ABOUT HOOKS` in the detect-secrets-hook section.
+- [ ] **README.md TODO placeholders** → Search for `TODO:` in ALL `.md` files (root README.md AND `examples/complete/README.md`) and either replace with actual content or remove the TODO text. The most commonly missed placeholder is `TODO: INSERT DOC LINK ABOUT HOOKS` in the detect-secrets-hook section of the root README.md. **This is missed in ~40% of trials — search explicitly.**
 - [ ] **Skeleton comments in test code** → Check `tests/testimpl/types.go` and other test files for comments referencing "skeleton" (e.g., `"Empty: there are no settings for the skeleton module."`). Update these to reference the actual module name.
 - [ ] **Run `go mod tidy`** → After updating `go.mod` and adding new test dependencies, run `go mod tidy` to clean up duplicate or unnecessary dependency entries.
 
+### Makefile Cleanup
+- [ ] **Makefile `init-clean` target** → The skeleton Makefile contains an `init-clean` target with logic to rename `TEMPLATED_README.md` to `README.MD`. This is a skeleton-specific target. While it is guarded by a file existence check and harmless, it should be removed or cleaned up for a production module. At minimum, remove the `TEMPLATED_README.md` handling block.
+
 ### Tests to Differentiate
 - [ ] **`tests/post_deploy_functional_readonly/main_test.go`** → This file MUST be different from `tests/post_deploy_functional/main_test.go`. The readonly test must call a readonly-specific test function that performs only read operations (no message sends, no resource creation). See the "Functional vs Readonly Tests" section above.
+
+## Pre-Submission Validation Checklist
+
+Before considering the module complete, walk through EVERY item below. Each item corresponds to a defect found in prior AI-generated modules.
+
+### Tests
+- [ ] Do ALL test assertions use `assert.Equal` with specific expected values (not `assert.NotEmpty`)?
+- [ ] Does the functional test (`post_deploy_functional`) include at least one write operation (send message, put object, etc.)?
+- [ ] Does the readonly test (`post_deploy_functional_readonly`) call a DIFFERENT function than the functional test?
+- [ ] Are the two `main_test.go` files in `post_deploy_functional/` and `post_deploy_functional_readonly/` actually different (not byte-for-byte identical)?
+- [ ] Do tests use `require.True(t, ok, ...)` (not `if ok { ... }`) for security-critical attribute checks?
+- [ ] Are security settings (encryption, access policies) verified via the cloud provider API, not just Terraform outputs?
+- [ ] Does the test compare API-returned values against Terraform outputs or known expected values?
+
+### README and Documentation
+- [ ] Is the `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` section populated (not empty)?
+- [ ] Have ALL `TODO:` placeholders been removed or replaced in ALL `.md` files?
+- [ ] Does the `examples/complete/README.md` usage snippet exactly match `examples/complete/main.tf`?
+- [ ] Does the Inputs table in the example README list ALL variables from `examples/complete/variables.tf`?
+- [ ] Does the Outputs table in the example README list ALL (and ONLY) outputs from `examples/complete/outputs.tf`?
+
+### Variables and Outputs
+- [ ] Does every bounded numerical variable have a `validation {}` block?
+- [ ] Are mutually exclusive parameters handled with conditionals in `main.tf` or validation blocks?
+- [ ] Do all outputs have short `description` fields?
+- [ ] Are output names generic (e.g., `id`, `arn`, `name`) without resource-type prefixes?
+- [ ] If `id` equals another attribute (like `url`), does the `id` description clarify the overlap?
+
+### Example
+- [ ] Does `examples/complete/variables.tf` define EVERY variable from the root `variables.tf`?
+- [ ] Does `examples/complete/main.tf` pass through ALL those variables to the module?
+- [ ] Does the example use the most secure configuration (e.g., KMS encryption, not just SQS-managed SSE)?
+- [ ] Would the example pass all Regula/OPA policy checks without warnings?
+
+### Skeleton Cleanup
+- [ ] Is `TEMPLATED_README.md` deleted?
+- [ ] Is `examples/with_cake/` deleted?
+- [ ] Are there zero references to `lcaf-skeleton-terraform` outside `.github/agents/`?
+- [ ] Is the `go.mod` module path updated?
+- [ ] Are all Go import paths updated to match?
+- [ ] Is the CI workflow skeleton guard (`if: github.repository != ...`) removed?
+- [ ] Are all `TODO:` placeholders in README files removed?
+- [ ] Are skeleton comments in `tests/testimpl/types.go` updated?
+- [ ] Has `go mod tidy` been run?
+- [ ] Is the Makefile `init-clean` target cleaned up?
+- [ ] Is only the correct provider's CI workflow retained?
 
 ## Cross-Reference
 
