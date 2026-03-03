@@ -40,9 +40,9 @@ You are most likely helping create or modify a **primitive module**.
 
 > **These are the most frequently violated requirements.** Every item below has been missed by AI agents in testing. Treat each as a hard requirement — failure on any of these is considered a High-severity defect.
 
-1. **Tests MUST assert specific expected values, not just non-emptiness.** Do NOT write `assert.NotEmpty(t, visibilityTimeout)`. Instead write `assert.Equal(t, "30", result.Attributes["VisibilityTimeout"])`. See [Testing Standards: Specific Value Assertions](#specific-value-assertions) for WRONG/RIGHT examples.
+1. **Tests MUST assert specific expected values, not just non-emptiness.** Do NOT write `assert.NotEmpty(t, someAttribute)`. Instead write `assert.Equal(t, expectedValue, result.Attributes["<attribute>"])` with the actual expected value for your resource. See [Testing Standards: Specific Value Assertions](#specific-value-assertions) for WRONG/RIGHT examples.
 
-2. **Functional and readonly tests MUST be meaningfully different.** The functional test must include write operations (e.g., sending a message to a queue). The readonly test must only read/verify. They must call different test implementation functions. NEVER copy `post_deploy_functional/main_test.go` into `post_deploy_functional_readonly/` unchanged. See [Functional vs Readonly Tests](#functional-vs-readonly-tests).
+2. **Functional and readonly tests MUST be meaningfully different.** The functional test must include write operations that exercise the resource (e.g., writing data, invoking a function). The readonly test must only read/verify. They must call different test implementation functions. NEVER copy `post_deploy_functional/main_test.go` into `post_deploy_functional_readonly/` unchanged. See [Functional vs Readonly Tests](#functional-vs-readonly-tests).
 
 3. **Security settings MUST be verified via the cloud API in tests.** If the module configures encryption, the test must assert that encryption is enabled via the provider SDK — not just check that a Terraform output is non-empty. Use `require` (not a conditional `if ok`) to ensure the security attribute is present. See [Security Verification in Tests](#security-verification-in-tests).
 
@@ -54,11 +54,11 @@ You are most likely helping create or modify a **primitive module**.
 
 7. **The example MUST pass through ALL root module variables.** Every variable in the root `variables.tf` must appear in `examples/complete/variables.tf` and be passed to the module call in `examples/complete/main.tf`. Mutually exclusive variables (e.g., `name` vs `name_prefix`) should both be defined with appropriate defaults (`null` for the one not used).
 
-8. **The example MUST use the most secure configuration.** If the organization's Regula/OPA policies would flag a security concern (e.g., "SQS encryption should use KMS keys"), the example must demonstrate the secure pattern (e.g., create a KMS key module and pass it). The example is the reference implementation.
+8. **The example MUST use the most secure configuration.** If the organization's Regula/OPA policies would flag a security concern (e.g., encryption should use customer-managed keys rather than provider-managed defaults), the example must demonstrate the secure pattern (e.g., create a KMS/CMEK key module and pass it). The example is the reference implementation.
 
 9. **Skeleton remnants MUST be completely removed.** This includes: Makefile `init-clean` target with `TEMPLATED_README.md` references, skeleton comments in `tests/testimpl/types.go`, TODO placeholders in README.md, and all references to `lcaf-skeleton-terraform` outside of `.github/agents/`. See [Skeleton Cleanup Checklist](#skeleton-cleanup-checklist).
 
-10. **Output `id` description must be accurate.** For resources where `id` equals another attribute (e.g., SQS queue `id` is the URL), use a clarifying description like `"The ID of the SQS queue (same as the queue URL)."` — do not use the exact same description as the `url` output.
+10. **Output `id` description must be accurate.** For resources where `id` equals another attribute (e.g., a queue's `id` is the same as its `url`, or a storage account's `id` is the full ARM resource path), use a clarifying description like `"The ID of the resource (same as the <other attribute>)."` — do not use the exact same description for both outputs.
 
 ## Cloud Providers Supported
 
@@ -251,21 +251,34 @@ variable "tags" {
 - Multi-line descriptions: use heredoc `<<-EOT ... EOT`
 - **Validation blocks are REQUIRED** for all bounded numerical inputs (e.g., timeouts, sizes, retention periods). Always add `validation {}` blocks when the cloud provider API enforces value ranges. Example:
   ```hcl
-  variable "visibility_timeout_seconds" {
-    description = "Visibility timeout in seconds."
+  # Azure example
+  variable "backup_retention_days" {
+    description = "Number of days to retain backups."
+    type        = number
+    default     = 7
+
+    validation {
+      condition     = var.backup_retention_days >= 7 && var.backup_retention_days <= 35
+      error_message = "Must be between 7 and 35 days."
+    }
+  }
+
+  # AWS example
+  variable "retention_in_days" {
+    description = "Number of days to retain log events."
     type        = number
     default     = 30
 
     validation {
-      condition     = var.visibility_timeout_seconds >= 0 && var.visibility_timeout_seconds <= 43200
-      error_message = "Must be between 0 and 43200 seconds."
+      condition     = contains([0, 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365], var.retention_in_days)
+      error_message = "Must be a valid CloudWatch Logs retention value."
     }
   }
   ```
-- **Mutually exclusive parameters:** When two variables cannot be used simultaneously (e.g., `sqs_managed_sse_enabled` and `kms_master_key_id`), add a `validation` block or use conditional logic in `main.tf` to prevent conflicts. Example:
+- **Mutually exclusive parameters:** When two variables cannot be used simultaneously (e.g., provider-managed encryption vs customer-managed key, or `name` vs `name_prefix`), add a `validation` block or use conditional logic in `main.tf` to prevent conflicts. Example:
   ```hcl
   # In main.tf - use conditional to resolve mutual exclusion:
-  sqs_managed_sse_enabled = var.kms_master_key_id == null ? var.sqs_managed_sse_enabled : false
+  provider_managed_encryption = var.customer_managed_key_id == null ? var.provider_managed_encryption : false
   ```
 
 **Provider-specific common variables:**
@@ -407,18 +420,30 @@ output "primary_endpoint" {
 - No complete resource object output
 - **Provider-specific outputs:** ARNs (AWS), FQDNs (Azure), etc.
 - **Output naming:** Use short, generic names without resource-type prefixes. Use `id`, `arn`, `name`, `url` — NOT `queue_id`, `queue_arn`, etc. The module context already implies the resource type.
-- **Output `id` description:** Some cloud resources return the same value for `id` and another attribute (e.g., SQS queue `id` is the queue URL). When this happens, do NOT give the `id` output the same description as the other output. Instead, clarify the overlap: `"The ID of the SQS queue (same as the queue URL)."` This prevents confusion when consumers see two outputs with identical descriptions.
+- **Output `id` description:** Some cloud resources return the same value for `id` and another attribute. When this happens, do NOT give the `id` output the same description as the other output. Instead, clarify the overlap: `"The ID of the resource (same as the <other attribute>)."` This prevents confusion when consumers see two outputs with identical descriptions.
 
 **Example with descriptions:**
 ```hcl
+# AWS example
 output "id" {
   description = "The ID of the resource."
-  value       = aws_sqs_queue.queue.id
+  value       = aws_s3_bucket.bucket.id
 }
 
 output "arn" {
   description = "The ARN of the resource."
-  value       = aws_sqs_queue.queue.arn
+  value       = aws_s3_bucket.bucket.arn
+}
+
+# Azure example
+output "id" {
+  description = "The ID of the resource."
+  value       = azurerm_postgresql_flexible_server.postgres.id
+}
+
+output "fqdn" {
+  description = "The fully qualified domain name of the server."
+  value       = azurerm_postgresql_flexible_server.postgres.fqdn
 }
 ```
 
@@ -614,7 +639,7 @@ module "postgres" {  # or "bucket", "lambda", etc.
 - Use `source = "../.."` to reference parent module
 - Pass through variables, minimal hardcoding
 - **The example must demonstrate ALL module variables** — every variable defined in the root module's `variables.tf` should be passed through in the example. This ensures the example serves as complete documentation and that all features are tested.
-- **Security-first example defaults:** The example's `test.tfvars` and `variables.tf` defaults must use the MOST SECURE configuration option. If the organization's Regula/OPA policies flag a security concern (e.g., SQS queues should use KMS encryption, not SQS-managed SSE), the example must demonstrate the secure pattern (e.g., create a KMS key and pass it to the module). The example is the reference implementation — it must pass all organizational policy checks without warnings.
+- **Security-first example defaults:** The example's `test.tfvars` and `variables.tf` defaults must use the MOST SECURE configuration option. If the organization's Regula/OPA policies flag a security concern (e.g., encryption should use customer-managed keys, not provider-managed defaults), the example must demonstrate the secure pattern (e.g., create a KMS/CMEK key module and pass it). The example is the reference implementation — it must pass all organizational policy checks without warnings.
 - **The example's README.md** must accurately reflect the actual `main.tf` code. The usage snippet and Inputs table must match the real example code exactly. Do not write a simplified snippet that omits variables. See [Example README Accuracy](#example-readme-accuracy) for details.
 
 ### Example README Accuracy
@@ -800,7 +825,7 @@ func TestResourceComplete(t *testing.T) {
 - Use the provider SDK directly for resources not covered by terratest helpers
 - Assert on specific configuration values (SKU, version, location, encryption settings), not just non-emptiness
 - Read credentials/region from environment variables; fail clearly if required env vars are missing
-- **Security settings must be verified via the cloud API.** If the module has security-related defaults (encryption, access policies, etc.), the test MUST assert those settings are correctly applied via the provider SDK. For example, if SQS encryption defaults to `sqs_managed_sse_enabled = true`, the test must verify `SqsManagedSseEnabled` via the SQS API.
+- **Security settings must be verified via the cloud API.** If the module has security-related defaults (encryption, access policies, TLS settings, etc.), the test MUST assert those settings are correctly applied via the provider SDK. For example, if the module enables encryption by default, the test must verify the encryption attribute via the cloud API — not just check that a Terraform output is non-empty.
 
 ### Specific Value Assertions
 
@@ -809,27 +834,28 @@ func TestResourceComplete(t *testing.T) {
 **WRONG — asserting non-emptiness (will pass even if the value is wrong):**
 ```go
 // BAD: These assertions prove nothing about correctness
-visibilityTimeout := result.Attributes["VisibilityTimeout"]
-assert.NotEmpty(t, visibilityTimeout, "Visibility timeout should be set")
+// (shown with generic attribute names — replace with your resource's actual attributes)
+attr1 := result.Attributes["<resource-specific attribute>"]
+assert.NotEmpty(t, attr1, "Attribute should be set")
 
-messageRetention := result.Attributes["MessageRetentionPeriod"]
-assert.NotEmpty(t, messageRetention, "Message retention should be set")
-
-kmsKeyId := result.Attributes["KmsMasterKeyId"]
-assert.NotEmpty(t, kmsKeyId, "KMS key should be set")
+attr2 := result.Attributes["<another attribute>"]
+assert.NotEmpty(t, attr2, "Attribute should be set")
 ```
 
 **RIGHT — asserting specific expected values:**
 ```go
 // GOOD: These assertions verify the module correctly applied configuration
-assert.Equal(t, "30", result.Attributes["VisibilityTimeout"], "Visibility timeout should match configured value")
-assert.Equal(t, "345600", result.Attributes["MessageRetentionPeriod"], "Message retention should match configured value")
-assert.Equal(t, "262144", result.Attributes["MaximumMessageSize"], "Max message size should match configured value")
-assert.Equal(t, "0", result.Attributes["DelaySeconds"], "Delay should match configured value")
+// AWS example (S3 bucket):
+assert.Equal(t, "Enabled", result.Versioning[0].Status, "Versioning should be enabled")
+assert.Equal(t, "aws:kms", result.ServerSideEncryptionConfiguration[0].Rules[0].ApplySSEByDefault[0].SSEAlgorithm)
+
+// Azure example (PostgreSQL):
+assert.Equal(t, "16", *server.Properties.Version, "PostgreSQL version should match configured value")
+assert.Equal(t, "B_Standard_B1ms", *server.Properties.SKU.Name, "SKU should match configured value")
 
 // For values from Terraform outputs, compare against the output:
-expectedKmsKeyID := terraform.Output(t, ctx.TerratestTerraformOptions(), "kms_key_id")
-assert.Equal(t, expectedKmsKeyID, result.Attributes["KmsMasterKeyId"], "KMS key should match Terraform output")
+expectedKeyID := terraform.Output(t, ctx.TerratestTerraformOptions(), "encryption_key_id")
+assert.Equal(t, expectedKeyID, actualKeyID, "Encryption key should match Terraform output")
 ```
 
 ### Security Verification in Tests
@@ -838,29 +864,31 @@ assert.Equal(t, expectedKmsKeyID, result.Attributes["KmsMasterKeyId"], "KMS key 
 
 **WRONG — conditional check that silently passes on missing attribute:**
 ```go
-// BAD: If KmsMasterKeyId is absent (encryption not configured), the test silently passes
-if kmsMasterKeyId, ok := result.Attributes["KmsMasterKeyId"]; ok {
-    assert.NotEmpty(t, kmsMasterKeyId, "KMS key should be set")
+// BAD: If the security attribute is absent (encryption not configured), the test silently passes
+if encryptionKey, ok := result.Attributes["<encryption attribute>"]; ok {
+    assert.NotEmpty(t, encryptionKey, "Encryption key should be set")
 }
 ```
 
 **RIGHT — mandatory check that fails if attribute is missing:**
 ```go
 // GOOD: Test fails if encryption is not configured (attribute missing)
-kmsMasterKeyId, ok := result.Attributes["KmsMasterKeyId"]
-require.True(t, ok, "KmsMasterKeyId attribute must be present — encryption may not be configured")
-assert.NotEmpty(t, kmsMasterKeyId, "KMS master key ID should be set for encryption")
+encryptionKey, ok := result.Attributes["<encryption attribute>"]
+require.True(t, ok, "Encryption attribute must be present — encryption may not be configured")
+assert.NotEmpty(t, encryptionKey, "Encryption key should be set")
 
 // EVEN BETTER: Compare against the expected key from Terraform output
-expectedKeyId := terraform.Output(t, ctx.TerratestTerraformOptions(), "kms_key_id")
-assert.Equal(t, expectedKeyId, kmsMasterKeyId, "KMS key should match the key provisioned by Terraform")
+expectedKeyId := terraform.Output(t, ctx.TerratestTerraformOptions(), "encryption_key_id")
+assert.Equal(t, expectedKeyId, encryptionKey, "Encryption key should match the key provisioned by Terraform")
 ```
+
+This pattern applies to any security attribute — encryption keys, TLS settings, access policies, etc. Replace `<encryption attribute>` with your resource's actual attribute name.
 
 ### Functional vs Readonly Tests
 
 The skeleton provides two test directories:
-- `tests/post_deploy_functional/` — Full lifecycle test: creates infrastructure, runs assertions (including write operations like sending messages), then destroys.
-- `tests/post_deploy_functional_readonly/` — Read-only verification: assumes infrastructure already exists, performs ONLY read operations (API queries, attribute checks). **Must NOT send messages, create resources, or modify state.**
+- `tests/post_deploy_functional/` — Full lifecycle test: creates infrastructure, runs assertions (including write operations that exercise the resource), then destroys.
+- `tests/post_deploy_functional_readonly/` — Read-only verification: assumes infrastructure already exists, performs ONLY read operations (API queries, attribute checks). **Must NOT write data, create resources, or modify state.**
 
 > **This is one of the most commonly violated requirements.** Models frequently produce byte-for-byte identical test files, or tests that call the same implementation function. Both test directories must call DIFFERENT test implementation functions in `tests/testimpl/`.
 
@@ -891,7 +919,7 @@ func TestComplete(t *testing.T) {
 ```
 
 **What makes them different in `tests/testimpl/test_impl.go`:**
-- `TestComposableComplete` — Verifies Terraform outputs, calls cloud API to check configuration, AND performs write operations (e.g., `sqs.SendMessage` + `sqs.ReceiveMessage` for SQS, `s3.PutObject` for S3, etc.)
+- `TestComposableComplete` — Verifies Terraform outputs, calls cloud API to check configuration, AND performs write operations that exercise the resource (e.g., writing an object to a bucket, inserting a record into a database, invoking a function, etc.)
 - `TestComposableCompleteReadonly` — Verifies Terraform outputs and calls cloud API to check configuration ONLY. No write operations. Focused on verifying resource existence, attributes, and security settings via read-only API calls.
 
 ## Makefile Standards
@@ -947,13 +975,13 @@ docs: ## Generate documentation
 - Leave TODO placeholders or skeleton comments in any file (search ALL `.md` and `.go` files for `TODO:` and `skeleton`)
 - Copy the functional test into the readonly test directory unchanged (they MUST call different functions)
 - Leave the terraform-docs section empty in README.md (populate it before finalizing)
-- Prefix output names with the resource type (use `id` not `queue_id`)
+- Prefix output names with the resource type (use `id` not `<resource>_id`)
 - Pass mutually exclusive parameters unconditionally (use conditionals or validation)
 - Skip input validation blocks for bounded numerical parameters
 - Use `assert.NotEmpty` for configuration values that have known expected values (use `assert.Equal` instead)
 - Use `if ok { assert... }` for security attribute checks (use `require.True(t, ok, ...)` instead)
 - Write a simplified usage snippet in the example README that omits variables from the actual `main.tf`
-- Give two outputs identical descriptions (e.g., both `id` and `url` described as "The URL of the queue")
+- Give two outputs identical descriptions when they share the same underlying value
 
 **Do:**
 - Wrap one resource type per primitive
@@ -1081,7 +1109,7 @@ Before considering the module complete, walk through EVERY item below. Each item
 ### Example
 - [ ] Does `examples/complete/variables.tf` define EVERY variable from the root `variables.tf`?
 - [ ] Does `examples/complete/main.tf` pass through ALL those variables to the module?
-- [ ] Does the example use the most secure configuration (e.g., KMS encryption, not just SQS-managed SSE)?
+- [ ] Does the example use the most secure configuration (e.g., customer-managed encryption keys, not provider-managed defaults)?
 - [ ] Would the example pass all Regula/OPA policy checks without warnings?
 
 ### Skeleton Cleanup
