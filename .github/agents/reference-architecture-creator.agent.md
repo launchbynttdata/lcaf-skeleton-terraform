@@ -3,7 +3,7 @@ name: Terraform Reference Architecture Creator
 description: Agent that creates a Terraform Reference Architecture from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.7 -->
+<!-- version: 1.8 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -12,6 +12,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 ## Changelog
 
+- **1.8** – Strengthened test assertion specificity: banned `assert.NotEmpty` for attributes with known expected values, added explicit `assert.Equal` examples deriving values from `test.tfvars`; strengthened functional vs readonly test differentiation with concrete write-operation requirements; mandated KMS encryption in examples and tests; added README verification checklist requiring cross-referencing against actual code; added `name`/`name_prefix` mutual exclusion as a variable validation example; added explicit `terraform-docs` or manual copy-paste requirement for README tables
 - **1.7** – Restored cloud-provider balance: scoped IAM block as AWS-specific and added Azure Networking & Security Best Practices; added complete Azure PostgreSQL test example with SDK verification (matching the AWS Lambda example in depth); added Azure naming format guidance alongside AWS examples
 - **1.6** – Added concrete AWS SDK verification examples for Lambda, CloudWatch, IAM, SQS, and KMS using lcaf-component-terratest framework; added complete read-only vs destructive test implementations; replaced commented-out AWS test pattern with working code
 - **1.5** – Strengthened testing requirements (SDK verification is mandatory, not optional); added IAM least-privilege and anti-duplication rules; added community module version compatibility warning; clarified example must not redundantly compose resource_names; strengthened skeleton cleanup checklist; added read-only vs destructive test differentiation; added README documentation requirements
@@ -618,6 +619,32 @@ variable "timeout" {
 }
 ```
 
+### Variable Validation
+
+Add `validation` blocks for variables with known constraints, especially mutual exclusion:
+
+```hcl
+# Example: name vs name_prefix mutual exclusion (common in AWS resources)
+variable "name" {
+  description = "Name of the resource. Conflicts with name_prefix."
+  type        = string
+  default     = null
+}
+
+variable "name_prefix" {
+  description = "Name prefix for the resource. Conflicts with name."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.name == null || var.name_prefix == null
+    error_message = "Only one of 'name' or 'name_prefix' can be set, not both."
+  }
+}
+```
+
+When a resource supports both `name` and `name_prefix`, expose both variables and add a validation block to enforce mutual exclusion. This prevents confusing Terraform errors at plan time.
+
 ### Feature Flag Variables
 
 **Enable/disable optional capabilities:**
@@ -998,14 +1025,56 @@ Reference architecture tests MUST cover ALL of the following:
 
 > **Anti-pattern:** A test that only calls `terraform.Output()` and `assert.NotEmpty()` without any SDK call is incomplete and will be flagged as a High severity issue.
 
+> **CRITICAL — Test Assertion Specificity (most common failure across all models):**
+>
+> **Do NOT use `assert.NotEmpty` for configuration attributes that have known expected values.** This is the single most common mistake. When the expected value can be derived from `test.tfvars` or the module defaults, you MUST use `assert.Equal` with the specific expected value.
+>
+> **BAD — will be flagged as High severity:**
+> ```go
+> // WRONG: Checks non-emptiness instead of the actual expected value
+> assert.NotEmpty(t, result.Attributes["VisibilityTimeout"])
+> assert.NotEmpty(t, *result.Configuration.Runtime)
+> assert.NotEmpty(t, *server.Properties.Version)
+> ```
+>
+> **GOOD — assert on specific expected values:**
+> ```go
+> // RIGHT: Assert the exact value from test.tfvars or module defaults
+> assert.Equal(t, "30", result.Attributes["VisibilityTimeout"])
+> assert.Equal(t, lambdaTypes.RuntimePython39, result.Configuration.Runtime)
+> assert.Equal(t, armpostgresqlflexibleservers.ServerVersion("16"), *server.Properties.Version)
+> ```
+>
+> **How to determine expected values:** Read the `test.tfvars` file (or the module's `variables.tf` defaults) and use those values in your assertions. For AWS API responses, note that most attribute values are returned as strings (e.g., `"30"` not `30` for visibility timeout, `"true"` not `true` for boolean attributes).
+>
+> **Conditional checks that silently pass are also banned:**
+> ```go
+> // WRONG: If the attribute is missing, the test silently passes
+> if val, ok := result.Attributes["KmsMasterKeyId"]; ok {
+>     assert.NotEmpty(t, val)
+> }
+>
+> // RIGHT: Assert the attribute exists and has the expected value
+> require.Contains(t, result.Attributes, "KmsMasterKeyId", "KMS key must be configured")
+> assert.Equal(t, expectedKmsKeyId, result.Attributes["KmsMasterKeyId"])
+> ```
+
 ### Read-Only vs Destructive Tests
 
 The `post_deploy_functional` and `post_deploy_functional_readonly` test directories serve different purposes and **must not be identical**:
 
-- **`post_deploy_functional`**: May include write/mutating operations (e.g., invoking a Lambda, writing to a queue, modifying state).
-- **`post_deploy_functional_readonly`**: Must contain ONLY read operations — no invocations, no writes, no mutations. This test runs in environments where destructive operations are not permitted.
+- **`post_deploy_functional`**: **MUST** include at least one write/mutating operation that exercises the deployed resource. This is what distinguishes it from the readonly test. Examples of required write operations by resource type:
+  - **Lambda:** `lambda.Invoke` with a test payload, assert on `StatusCode == 200` and `FunctionError == nil`
+  - **SQS:** `sqs.SendMessage` followed by `sqs.ReceiveMessage`, assert the message body matches
+  - **S3:** `s3.PutObject` followed by `s3.GetObject`, assert content matches
+  - **SNS:** `sns.Publish` a test message
+  - **DynamoDB:** `dynamodb.PutItem` followed by `dynamodb.GetItem`
+  - If no obvious write operation exists for the resource type, document why in a code comment
+- **`post_deploy_functional_readonly`**: Must contain ONLY read operations — no invocations, no writes, no mutations. This test runs in environments where destructive operations are not permitted. It MUST still verify security-relevant configuration (encryption, access policies) via SDK `Get`/`Describe` calls.
 
-Create a separate read-only test function (e.g., `TestComposableCompleteReadOnly`) that verifies resource existence and configuration via SDK `Get`/`Describe` calls but does NOT invoke or mutate any resources. The destructive test can additionally invoke the Lambda, send messages, etc.
+**The two test files must NOT be identical or near-identical.** If the only difference is the function name, that is a High severity issue. The functional test MUST call `TestComposableComplete` (which includes write operations) and the readonly test MUST call `TestComposableCompleteReadOnly` (which includes ONLY read operations).
+
+Create a separate read-only test function (e.g., `TestComposableCompleteReadOnly`) that verifies resource existence and configuration via SDK `Get`/`Describe` calls but does NOT invoke or mutate any resources. The destructive test should call the read-only function first, then additionally perform write/mutating operations.
 
 ### AWS Lambda Reference Architecture — Complete Test Example
 
@@ -1659,6 +1728,57 @@ variable "backup_retention_days" {
 }
 ```
 
+### 3a. Security-First Encryption Defaults
+
+> **CRITICAL — Encryption requirements:**
+>
+> **The `examples/complete/` MUST use KMS-based encryption (not service-managed SSE).** Service-managed SSE (e.g., `sqs_managed_sse_enabled = true`) will be flagged by security scanners like Regula (e.g., FG_R00070 for SQS). Always prefer KMS:
+>
+> **AWS example — SQS with KMS:**
+> ```hcl
+> # In examples/complete/main.tf
+> module "sqs_reference" {
+>   source = "../.."
+>   # ...
+>   kms_master_key_id                 = aws_kms_key.example.id
+>   sqs_managed_sse_enabled           = false  # Use KMS, not SSE
+> }
+>
+> resource "aws_kms_key" "example" {
+>   description = "KMS key for SQS encryption"
+> }
+> ```
+>
+> **The test MUST assert the specific KMS key ID via SDK, not just check that encryption is "enabled":**
+> ```go
+> // In test_impl.go
+> kmsKeyId := terraform.Output(t, ctx.TerratestTerraformOptions(), "kms_key_id")
+> require.NotEmpty(t, kmsKeyId, "KMS key ID output must not be empty")
+>
+> attrs, err := sqsClient.GetQueueAttributes(context.TODO(), &sqs.GetQueueAttributesInput{
+>     QueueUrl:       aws.String(queueUrl),
+>     AttributeNames: []sqsTypes.QueueAttributeName{sqsTypes.QueueAttributeNameAll},
+> })
+> require.NoError(t, err)
+> assert.Equal(t, kmsKeyId, attrs.Attributes["KmsMasterKeyId"],
+>     "Queue must be encrypted with the expected KMS key")
+> ```
+>
+> **For mutual exclusion variables** (e.g., `sqs_managed_sse_enabled` vs `kms_master_key_id`), add a validation block:
+> ```hcl
+> variable "sqs_managed_sse_enabled" {
+>   type    = bool
+>   default = false
+> }
+>
+> variable "kms_master_key_id" {
+>   type    = string
+>   default = null
+> }
+>
+> # In locals or a validation block, ensure they are mutually exclusive
+> ```
+
 ### 4. Use Community Modules Wisely (AWS)
 ```hcl
 # Good: Use for complex, well-maintained resources
@@ -1841,11 +1961,12 @@ When asked to create a new reference architecture:
    - Write Terratest
    - Verify all optional features can be enabled/disabled
 
-6. **Document**
+6. **Document** (this step is mandatory and must be cross-referenced against code)
    - Explain the pattern being implemented
    - Document all optional features
    - Provide usage examples
    - Note provider-specific considerations
+   - **Verification:** After writing documentation, diff the README usage snippet against the actual `examples/complete/main.tf` to confirm they match. Verify every input/output listed in the README exists in `variables.tf`/`outputs.tf`. Ensure the `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` section is populated (not empty). Remove all `TODO:` placeholders.
 
 ## Updates Needed for Older Modules
 
@@ -1882,9 +2003,14 @@ When transforming the skeleton into a new module, complete ALL of these steps. *
 - [ ] **CI workflow skeleton guard** → Remove the `if: github.event.pull_request.head.repo.full_name != 'launchbynttdata/lcaf-skeleton-terraform'` condition from ALL remaining workflow files. This guard prevents the CI from running in non-skeleton repos.
 - [ ] **README.md** → Replace ALL skeleton artifacts:
   - Replace Azure-specific references (ARM_CLIENT_ID, azure_env.sh, azurerm provider) with provider-appropriate content for AWS modules
-  - Remove or replace any `TODO:` placeholders (e.g., `TODO: INSERT DOC LINK ABOUT HOOKS`)
-  - Ensure the `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` section is populated (run `terraform-docs` or manually document all inputs/outputs)
+  - Remove or replace any `TODO:` placeholders (e.g., `TODO: INSERT DOC LINK ABOUT HOOKS`) — **no `TODO:` text may remain in any committed file**
+  - Ensure the `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` section is populated — run `terraform-docs markdown . > /dev/null` to generate content, or manually copy inputs/outputs from `variables.tf` and `outputs.tf`. **Do NOT leave this section empty.**
   - Verify that the "Modules" table in the README accurately lists only the modules actually used in `main.tf`
+  - **Cross-reference the usage snippet against the actual `examples/complete/main.tf`** — every variable in the snippet must exist in `variables.tf`, every module call must match the real `main.tf`. Do NOT hallucinate variable names or module arguments that don't exist in the code.
+- [ ] **`examples/complete/README.md`** → Must accurately describe the example:
+  - The usage snippet must match the actual `main.tf` in the same directory
+  - Do NOT list outputs that don't exist in `outputs.tf`
+  - Do NOT reference variables that don't exist in `variables.tf`
 
 ## Cross-Reference
 
