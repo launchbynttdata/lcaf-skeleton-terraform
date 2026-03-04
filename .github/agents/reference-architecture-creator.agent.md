@@ -3,7 +3,7 @@ name: Terraform Reference Architecture Creator
 description: Agent that creates a Terraform Reference Architecture from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.4 -->
+<!-- version: 1.5 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -12,6 +12,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 ## Changelog
 
+- **1.5** – Strengthened testing requirements (SDK verification is mandatory, not optional); added IAM least-privilege and anti-duplication rules; added community module version compatibility warning; clarified example must not redundantly compose resource_names; strengthened skeleton cleanup checklist; added read-only vs destructive test differentiation; added README documentation requirements
 - **1.4** – Fixed version header (block must come first to be recognized as an agent)
 - **1.3** – Added agent header, migrated to agents folder, added skeleton cleanup checklist.
 - **1.2** – Fixed resource naming module usage: `for_each = var.resource_names_map` (not a module input), correct variable name `class_env` (not `environment`), added required `cloud_resource_type`/`maximum_length` params, corrected output reference syntax to `module.resource_names["key"].format`, noted hyphens-stripping for AWS regions, replaced incorrect `resource_names_strategy` variable pattern with correct per-resource output format selection
@@ -252,6 +253,8 @@ module "lambda_function" {
 - Well-maintained, popular modules with good track records
 - Complex resources that would duplicate significant effort
 - AWS Lambda, VPC, ECS - where terraform-aws-modules are standard
+
+> **CRITICAL — Version compatibility:** Before selecting a community module version, verify that the module version is compatible with the provider version constraint in your `versions.tf`. For example, if your module requires `aws ~> 5.14`, do NOT use community module versions that require `aws >= 6.x`. Run `terraform init` to confirm compatibility. Using incompatible versions will cause `make lint` and `make check` to fail. Always check the community module's `versions.tf` or README for provider requirements.
 
 **When to use internal primitives:**
 - Simpler resources
@@ -494,6 +497,13 @@ locals {
 ```
 
 Available output formats: `standard`, `lower_case`, `upper_case`, `minimal`, `minimal_random_suffix`, `dns_compliant_standard`, `dns_compliant_minimal`, `dns_compliant_minimal_random_suffix`, `camel_case`, `recommended_per_length_restriction`.
+
+> **Choose the right format explicitly.** Do NOT default to `recommended_per_length_restriction` — it auto-selects based on max_length which may produce unexpected name formats. Instead, explicitly select the format in locals:
+> - `.standard` — most resources (IAM roles, policies, CloudWatch log groups, security groups)
+> - `.minimal_random_suffix` — globally unique resources (S3 buckets, ECR repositories)
+> - `.dns_compliant_minimal_random_suffix` — resources with DNS naming constraints (Lambda functions, API Gateway, ECS services)
+>
+> **Example for Lambda:** Use `module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix`, NOT `.minimal_random_suffix` or `.recommended_per_length_restriction`.
 
 ### Naming Context Variables
 
@@ -774,6 +784,8 @@ terraform {
 
 **NOTE:** AWS modules using `~> 1.5` represents a newer standard. Azure modules still using `~> 1.0` should be updated to match.
 
+> **WARNING:** Always use pessimistic version constraints (`~>`) for the AWS provider, NOT open-ended constraints like `>= 5.0`. Using `>= 5.0` allows future major versions (e.g., 6.x) which may introduce breaking changes and incompatibilities with community modules. Use `~> 5.14` to pin to the 5.x line.
+
 ## locals.tf Pattern
 
 Use locals for computed values, complex logic, or to avoid repetition:
@@ -883,6 +895,19 @@ module "lambda_function" {
 }
 ```
 
+**IAM Best Practices:**
+
+> **WARNING — Common mistakes with IAM in reference architectures:**
+>
+> 1. **Never use inline `resource` blocks for IAM.** IAM roles, policies, and attachments MUST be created via a primitive module (e.g., `terraform.registry.launch.nttdata.com/module_primitive/iam_role/aws`) or a community module (e.g., `terraform-aws-modules/iam/aws`). Creating `aws_iam_role`, `aws_iam_role_policy`, or `aws_iam_role_policy_attachment` as inline resources is a Critical anti-pattern.
+>
+> 2. **Scope IAM policies to the minimum required resources.** Never use `arn:aws:logs:*:*:*` or similar wildcard ARNs. Always scope to the specific region and account using `data "aws_region" "current"` and `data "aws_caller_identity" "current"`:
+>    ```hcl
+>    resources = ["arn:aws:logs:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.function_name}:*"]
+>    ```
+>
+> 3. **Avoid duplicate permissions.** If a community module (e.g., `terraform-aws-modules/lambda/aws`) has `attach_cloudwatch_logs_policy = true`, do NOT also create a separate IAM policy granting the same `logs:*` permissions. Choose one source of truth for each permission set.
+
 **IAM Policy Flexibility:**
 ```hcl
 variable "attach_policy_statements" {
@@ -947,10 +972,24 @@ variable "cloudwatch_logs_kms_key_id" {
 
 Tests must verify **both** Terraform outputs **and** actual resource state via the cloud provider API. Terraform outputs are generated by Terraform itself and do not prove the cloud resources were actually created or configured correctly. Always use provider SDK helpers to confirm real resource state for each significant resource in the architecture.
 
-Reference architecture tests should cover:
-- The primary resource (existence + key configuration)
-- Optional features that were enabled in the example (private endpoint, monitoring, AD integration, etc.)
+> **WARNING — Most common trial failure:** Checking only that a Terraform output is non-empty (e.g., `assert.NotEmpty(t, terraform.Output(..., "role_arn"))`) does **NOT** satisfy the API verification requirement. You MUST make an actual SDK call (e.g., `iam.GetRole`, `sqs.GetQueueAttributes`, `kms.DescribeKey`, `cloudwatchlogs.DescribeLogGroups`, `lambda.GetFunction`) and assert on properties of the returned object. Every significant resource in the architecture needs its own SDK verification — do not skip any.
+
+Reference architecture tests MUST cover ALL of the following:
+- The primary resource (existence + key configuration attributes via SDK)
+- **Every optional feature that is enabled in the example** (DLQ, KMS, CloudWatch Log Group, IAM role, etc.) — each verified via its respective cloud provider SDK
+- IAM role existence and attached policies (via `iam.GetRole` + `iam.ListAttachedRolePolicies`)
 - Outputs from composed primitives (resource group name, FQDNs, ARNs, etc.)
+
+> **Anti-pattern:** A test that only calls `terraform.Output()` and `assert.NotEmpty()` without any SDK call is incomplete and will be flagged as a High severity issue.
+
+### Read-Only vs Destructive Tests
+
+The `post_deploy_functional` and `post_deploy_functional_readonly` test directories serve different purposes and **must not be identical**:
+
+- **`post_deploy_functional`**: May include write/mutating operations (e.g., invoking a Lambda, writing to a queue, modifying state).
+- **`post_deploy_functional_readonly`**: Must contain ONLY read operations — no invocations, no writes, no mutations. This test runs in environments where destructive operations are not permitted.
+
+Create a separate read-only test function (e.g., `TestComposableCompleteReadOnly`) that verifies resource existence and configuration via SDK `Get`/`Describe` calls but does NOT invoke or mutate any resources. The destructive test can additionally invoke the Lambda, send messages, etc.
 
 **Azure pattern:**
 ```go
@@ -1141,6 +1180,8 @@ func TestArchitectureComplete(t *testing.T) {
 - Assert on specific values, not just non-emptiness — this catches misconfiguration that Terraform would still report as a successful output
 
 ## Example Usage in examples/complete/
+
+> **WARNING — Do not redundantly compose sub-modules in examples.** The `examples/complete/` directory demonstrates how an end user calls the reference architecture module. Since the reference architecture already composes `resource_names` (and other primitives) internally, the example must NOT instantiate a separate `module "resource_names"` block. Doing so creates dead code that confuses users into thinking they need to manage resource names externally. The example should only call the reference architecture module and pass in variables.
 
 **Azure example:**
 ```hcl
@@ -1389,7 +1430,7 @@ module "configuration" {
 ## Anti-Patterns to Avoid
 
 **Don't:**
-- Create resources directly (use primitives)
+- Create resources directly (use primitives) — this includes IAM roles, policies, and policy attachments
 - Hardcode resource names (use resource naming module)
 - Make everything required (provide sensible defaults)
 - Ignore monitoring and observability
@@ -1399,6 +1440,13 @@ module "configuration" {
 - Create monolithic architectures (keep focused)
 - Duplicate primitive logic (compose, don't copy)
 - Mix cloud provider patterns
+- Use wildcard ARNs in IAM policies (e.g., `arn:aws:logs:*:*:*`) — always scope to specific region/account
+- Create duplicate IAM permissions (e.g., both `attach_cloudwatch_logs_policy = true` AND a separate logs policy)
+- Use community module versions that require a newer provider version than your `versions.tf` allows
+- Compose sub-modules (e.g., `resource_names`) redundantly in `examples/complete/` when the root module already handles them
+- Leave skeleton artifacts (TEMPLATED_README.md, Azure workflows in AWS modules, skeleton guards, TODO placeholders)
+- Write tests that only check `terraform.Output` without making SDK API calls to verify real resource state
+- Make `post_deploy_functional_readonly` identical to `post_deploy_functional` — they must differ
 
 **Do:**
 - Compose primitives
@@ -1410,6 +1458,9 @@ module "configuration" {
 - Keep architectures focused on one pattern
 - Trust and use primitives as building blocks
 - Follow provider-specific best practices
+- Scope IAM policies using `data.aws_region.current.name` and `data.aws_caller_identity.current.account_id`
+- Verify EVERY significant resource via cloud provider SDK in tests (not just Terraform outputs)
+- Run `terraform init` and `make lint` to verify community module version compatibility before finalizing
 
 ## Creating a New Reference Architecture
 
@@ -1474,18 +1525,23 @@ Based on comparing Azure and AWS modules, older modules may need:
 
 ## Skeleton Cleanup Checklist
 
-When transforming the skeleton into a new primitive module, complete ALL of these steps:
+When transforming the skeleton into a new module, complete ALL of these steps. **Every item is mandatory** — skipping any item will be flagged as a High or Medium severity issue in code review.
 
 ### Files to Remove or Transform
-- [ ] **TEMPLATED_README.md** → Delete after incorporating relevant content into README.md
-- [ ] **Only one Terraform Check CI workflow can be present** (`.github/workflows/pull-request-terraform-check-*.yml`) → Remove Azure for AWS module, remove AWS for Azure module, etc. Keep the one that matches your provider.
+- [ ] **TEMPLATED_README.md** → **DELETE this file** after incorporating relevant content into README.md. Do NOT leave it in the repository.
+- [ ] **Only one Terraform Check CI workflow can be present** (`.github/workflows/pull-request-terraform-check-*.yml`) → **DELETE** the workflow file for the provider you are NOT using. For an AWS module, delete `pull-request-terraform-check-azure.yml`. For an Azure module, delete `pull-request-terraform-check-aws.yml`. This is the most commonly missed cleanup step.
 - [ ] **`examples/with_cake/`** → Delete skeleton example directory
 
 ### Files to Update
-- [ ] **`go.mod`** → Update the `lcaf-skeleton-terraform` portion of the `github.com/launchbynttdata/lcaf-skeleton-terraform` header to your module name
-- [ ] **Test imports** → Update all Go import paths to match new `go.mod` module path
-- [ ] **CI workflow skeleton guard** → Remove the `if: github.repository != 'launchbynttdata/lcaf-skeleton-terraform'` condition from all workflow files
-- [ ] **README.md** → Replace Azure-specific references (ARM_CLIENT_ID, azure_env.sh, azurerm provider) with provider-appropriate content
+- [ ] **`go.mod`** → Update `github.com/launchbynttdata/lcaf-skeleton-terraform` to your actual module name (e.g., `github.com/launchbynttdata/tf-aws-module_reference-lambda_function`). This is required for Go tests to compile correctly.
+- [ ] **Test imports** → Update ALL Go import paths in `tests/post_deploy_functional/main_test.go`, `tests/post_deploy_functional_readonly/main_test.go`, and any other test files to match the new `go.mod` module path.
+- [ ] **Test function names** → Rename `TestSkeletonModule` (or similar skeleton-derived names) to a descriptive name like `TestLambdaReferenceArchitecture`.
+- [ ] **CI workflow skeleton guard** → Remove the `if: github.event.pull_request.head.repo.full_name != 'launchbynttdata/lcaf-skeleton-terraform'` condition from ALL remaining workflow files. This guard prevents the CI from running in non-skeleton repos.
+- [ ] **README.md** → Replace ALL skeleton artifacts:
+  - Replace Azure-specific references (ARM_CLIENT_ID, azure_env.sh, azurerm provider) with provider-appropriate content for AWS modules
+  - Remove or replace any `TODO:` placeholders (e.g., `TODO: INSERT DOC LINK ABOUT HOOKS`)
+  - Ensure the `<!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->` section is populated (run `terraform-docs` or manually document all inputs/outputs)
+  - Verify that the "Modules" table in the README accurately lists only the modules actually used in `main.tf`
 
 ## Cross-Reference
 
