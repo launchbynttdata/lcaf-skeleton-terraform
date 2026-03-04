@@ -3,7 +3,7 @@ name: Terraform Reference Architecture Creator
 description: Agent that creates a Terraform Reference Architecture from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.5 -->
+<!-- version: 1.6 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -12,6 +12,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 ## Changelog
 
+- **1.6** – Added concrete AWS SDK verification examples for Lambda, CloudWatch, IAM, SQS, and KMS using lcaf-component-terratest framework; added complete read-only vs destructive test implementations; replaced commented-out AWS test pattern with working code
 - **1.5** – Strengthened testing requirements (SDK verification is mandatory, not optional); added IAM least-privilege and anti-duplication rules; added community module version compatibility warning; clarified example must not redundantly compose resource_names; strengthened skeleton cleanup checklist; added read-only vs destructive test differentiation; added README documentation requirements
 - **1.4** – Fixed version header (block must come first to be recognized as an agent)
 - **1.3** – Added agent header, migrated to agents folder, added skeleton cleanup checklist.
@@ -991,6 +992,222 @@ The `post_deploy_functional` and `post_deploy_functional_readonly` test director
 
 Create a separate read-only test function (e.g., `TestComposableCompleteReadOnly`) that verifies resource existence and configuration via SDK `Get`/`Describe` calls but does NOT invoke or mutate any resources. The destructive test can additionally invoke the Lambda, send messages, etc.
 
+### AWS Lambda Reference Architecture — Complete Test Example
+
+This is a complete, working example of how to test an AWS Lambda reference architecture using the `lcaf-component-terratest` framework with full SDK verification. **Use this as your template for AWS reference architectures.**
+
+**`tests/testimpl/test_impl.go`** — SDK verification for all composed resources:
+```go
+package testimpl
+
+import (
+	"context"
+	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	lambdaTypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// TestComposableComplete runs all read-only SDK checks PLUS mutating operations.
+// Used by post_deploy_functional.
+func TestComposableComplete(t *testing.T, ctx types.TestContext) {
+	// Run all read-only verification first
+	TestComposableCompleteReadOnly(t, ctx)
+
+	// --- Mutating / destructive tests below ---
+
+	t.Run("TestLambdaInvocation", func(t *testing.T) {
+		lambdaClient := GetAWSLambdaClient(t)
+		functionName := terraform.Output(t, ctx.TerratestTerraformOptions(), "lambda_function_name")
+
+		result, err := lambdaClient.Invoke(context.TODO(), &lambda.InvokeInput{
+			FunctionName: aws.String(functionName),
+			Payload:      []byte(`{"test": true}`),
+		})
+		require.NoError(t, err, "Lambda invocation should succeed")
+		assert.Equal(t, int32(200), result.StatusCode, "Lambda should return 200")
+		assert.Nil(t, result.FunctionError, "Lambda should not return an error")
+	})
+}
+
+// TestComposableCompleteReadOnly verifies all resources via SDK Get/Describe calls ONLY.
+// No invocations, no writes, no mutations. Used by post_deploy_functional_readonly.
+func TestComposableCompleteReadOnly(t *testing.T, ctx types.TestContext) {
+	functionName := terraform.Output(t, ctx.TerratestTerraformOptions(), "lambda_function_name")
+	functionArn := terraform.Output(t, ctx.TerratestTerraformOptions(), "lambda_function_arn")
+	roleName := terraform.Output(t, ctx.TerratestTerraformOptions(), "lambda_role_name")
+	roleArn := terraform.Output(t, ctx.TerratestTerraformOptions(), "lambda_role_arn")
+
+	t.Run("TestLambdaFunctionExists", func(t *testing.T) {
+		lambdaClient := GetAWSLambdaClient(t)
+		result, err := lambdaClient.GetFunction(context.TODO(), &lambda.GetFunctionInput{
+			FunctionName: aws.String(functionName),
+		})
+		require.NoError(t, err, "GetFunction should succeed")
+		assert.Equal(t, functionArn, *result.Configuration.FunctionArn)
+		assert.Equal(t, functionName, *result.Configuration.FunctionName)
+		assert.Equal(t, lambdaTypes.StateActive, result.Configuration.State)
+	})
+
+	t.Run("TestCloudWatchLogGroupExists", func(t *testing.T) {
+		cwClient := GetAWSCloudWatchLogsClient(t)
+		logGroupName := "/aws/lambda/" + functionName
+
+		result, err := cwClient.DescribeLogGroups(context.TODO(), &cloudwatchlogs.DescribeLogGroupsInput{
+			LogGroupNamePrefix: aws.String(logGroupName),
+		})
+		require.NoError(t, err, "DescribeLogGroups should succeed")
+		require.NotEmpty(t, result.LogGroups, "CloudWatch Log Group should exist for Lambda function")
+		assert.Equal(t, logGroupName, *result.LogGroups[0].LogGroupName)
+	})
+
+	t.Run("TestIAMRoleExists", func(t *testing.T) {
+		iamClient := GetAWSIAMClient(t)
+
+		roleResult, err := iamClient.GetRole(context.TODO(), &iam.GetRoleInput{
+			RoleName: aws.String(roleName),
+		})
+		require.NoError(t, err, "GetRole should succeed")
+		assert.Equal(t, roleArn, *roleResult.Role.Arn)
+
+		// Verify at least one policy is attached
+		policies, err := iamClient.ListAttachedRolePolicies(context.TODO(), &iam.ListAttachedRolePoliciesInput{
+			RoleName: aws.String(roleName),
+		})
+		require.NoError(t, err, "ListAttachedRolePolicies should succeed")
+		assert.NotEmpty(t, policies.AttachedPolicies, "IAM role should have at least one attached policy")
+	})
+
+	// Optional resource: DLQ — skip if not enabled in example
+	t.Run("TestDLQExists", func(t *testing.T) {
+		dlqUrl := terraform.Output(t, ctx.TerratestTerraformOptions(), "dlq_url")
+		if dlqUrl == "" {
+			t.Skip("DLQ not enabled in this example")
+		}
+		sqsClient := GetAWSSQSClient(t)
+
+		result, err := sqsClient.GetQueueAttributes(context.TODO(), &sqs.GetQueueAttributesInput{
+			QueueUrl:       aws.String(dlqUrl),
+			AttributeNames: []sqsTypes.QueueAttributeName{sqsTypes.QueueAttributeNameAll},
+		})
+		require.NoError(t, err, "GetQueueAttributes should succeed for DLQ")
+		assert.NotEmpty(t, result.Attributes, "DLQ should have attributes")
+	})
+
+	// Optional resource: KMS key — skip if not enabled in example
+	t.Run("TestKMSKeyExists", func(t *testing.T) {
+		kmsKeyId := terraform.Output(t, ctx.TerratestTerraformOptions(), "kms_key_id")
+		if kmsKeyId == "" {
+			t.Skip("KMS key not enabled in this example")
+		}
+		kmsClient := GetAWSKMSClient(t)
+
+		result, err := kmsClient.DescribeKey(context.TODO(), &kms.DescribeKeyInput{
+			KeyId: aws.String(kmsKeyId),
+		})
+		require.NoError(t, err, "DescribeKey should succeed")
+		assert.True(t, result.KeyMetadata.Enabled, "KMS key should be enabled")
+	})
+}
+
+// --- AWS SDK Helper Functions ---
+
+func GetAWSConfig(t *testing.T) aws.Config {
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	require.NoError(t, err, "unable to load AWS SDK config")
+	return cfg
+}
+
+func GetAWSLambdaClient(t *testing.T) *lambda.Client {
+	return lambda.NewFromConfig(GetAWSConfig(t))
+}
+
+func GetAWSCloudWatchLogsClient(t *testing.T) *cloudwatchlogs.Client {
+	return cloudwatchlogs.NewFromConfig(GetAWSConfig(t))
+}
+
+func GetAWSIAMClient(t *testing.T) *iam.Client {
+	return iam.NewFromConfig(GetAWSConfig(t))
+}
+
+func GetAWSSQSClient(t *testing.T) *sqs.Client {
+	return sqs.NewFromConfig(GetAWSConfig(t))
+}
+
+func GetAWSKMSClient(t *testing.T) *kms.Client {
+	return kms.NewFromConfig(GetAWSConfig(t))
+}
+```
+
+**`post_deploy_functional/main_test.go`** — calls `TestComposableComplete` (includes mutating tests):
+```go
+package test
+
+import (
+	"testing"
+
+	"github.com/launchbynttdata/lcaf-component-terratest/lib"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
+	"github.com/launchbynttdata/YOUR_MODULE_NAME/tests/testimpl"
+)
+
+const (
+	testConfigsExamplesFolderDefault = "../../examples"
+	infraTFVarFileNameDefault        = "test.tfvars"
+)
+
+func TestLambdaReferenceArchitecture(t *testing.T) {
+	ctx := types.CreateTestContextBuilder().
+		SetTestConfig(&testimpl.ThisTFModuleConfig{}).
+		SetTestConfigFolderName(testConfigsExamplesFolderDefault).
+		SetTestConfigFileName(infraTFVarFileNameDefault).
+		Build()
+
+	lib.RunSetupTestTeardown(t, *ctx, testimpl.TestComposableComplete)
+}
+```
+
+**`post_deploy_functional_readonly/main_test.go`** — calls `TestComposableCompleteReadOnly` (read-only only):
+```go
+package test
+
+import (
+	"testing"
+
+	"github.com/launchbynttdata/lcaf-component-terratest/lib"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
+	"github.com/launchbynttdata/YOUR_MODULE_NAME/tests/testimpl"
+)
+
+const (
+	testConfigsExamplesFolderDefault = "../../examples"
+	infraTFVarFileNameDefault        = "test.tfvars"
+)
+
+func TestLambdaReferenceArchitectureReadOnly(t *testing.T) {
+	ctx := types.CreateTestContextBuilder().
+		SetTestConfig(&testimpl.ThisTFModuleConfig{}).
+		SetTestConfigFolderName(testConfigsExamplesFolderDefault).
+		SetTestConfigFileName(infraTFVarFileNameDefault).
+		Build()
+
+	lib.RunSetupTestTeardown(t, *ctx, testimpl.TestComposableCompleteReadOnly)
+}
+```
+
+> **CRITICAL:** Note how `post_deploy_functional` and `post_deploy_functional_readonly` call **different** functions. The readonly entry point calls `TestComposableCompleteReadOnly` which does NOT invoke the Lambda or perform any mutating operations. Never make these two files identical.
+
 **Azure pattern:**
 ```go
 package tests
@@ -1055,70 +1272,7 @@ func TestArchitectureComplete(t *testing.T) {
 }
 ```
 
-**AWS pattern:**
-```go
-package tests
-
-import (
-    "os"
-    "testing"
-
-    "github.com/gruntwork-io/terratest/modules/aws"
-    "github.com/gruntwork-io/terratest/modules/terraform"
-    "github.com/stretchr/testify/assert"
-    "github.com/stretchr/testify/require"
-)
-
-func TestArchitectureComplete(t *testing.T) {
-    t.Parallel()
-
-    awsRegion := os.Getenv("AWS_DEFAULT_REGION")
-    if awsRegion == "" {
-        awsRegion = "us-east-1"
-    }
-
-    terraformOptions := &terraform.Options{
-        TerraformDir: "../examples/complete",
-    }
-
-    defer terraform.Destroy(t, terraformOptions)
-    terraform.InitAndApply(t, terraformOptions)
-
-    // Verify Terraform outputs
-    functionName := terraform.Output(t, terraformOptions, "lambda_function_name")
-    assert.NotEmpty(t, functionName)
-
-    functionArn := terraform.Output(t, terraformOptions, "lambda_function_arn")
-    assert.NotEmpty(t, functionArn)
-
-    roleArn := terraform.Output(t, terraformOptions, "lambda_role_arn")
-    assert.NotEmpty(t, roleArn)
-
-    // Verify primary resource via AWS API
-    // Use terratest aws helpers where available (github.com/gruntwork-io/terratest/modules/aws)
-    // Fall back to the AWS SDK for resources not covered by terratest helpers
-    // (github.com/aws/aws-sdk-go-v2/service/...)
-
-    // Example: verify the Lambda function exists and is correctly configured
-    // cfg, _ := config.LoadDefaultConfig(context.Background(), config.WithRegion(awsRegion))
-    // client := lambda.NewFromConfig(cfg)
-    // result, _ := client.GetFunction(context.Background(), &lambda.GetFunctionInput{FunctionName: &functionName})
-    // require.NotNil(t, result.Configuration)
-    // assert.Equal(t, "python3.9", string(result.Configuration.Runtime))
-    // assert.EqualValues(t, 256, *result.Configuration.MemorySize)
-    // assert.Equal(t, types.StateActive, result.Configuration.State)
-
-    // Verify optional features enabled in the example
-    // Example: confirm CloudWatch log group was created
-    // logGroupName := "/aws/lambda/" + functionName
-    // aws.AssertCloudWatchLogGroupExists(t, awsRegion, logGroupName)
-
-    // Example: confirm IAM role has the expected policies
-    // iamClient := iam.NewFromConfig(cfg)
-    // policies, _ := iamClient.ListAttachedRolePolicies(context.Background(), &iam.ListAttachedRolePoliciesInput{RoleName: &roleName})
-    // assert.NotEmpty(t, policies.AttachedPolicies)
-}
-```
+**AWS pattern:** See the complete [AWS Lambda Reference Architecture test example](#aws-lambda-reference-architecture--complete-test-example) above for a fully working implementation using the `lcaf-component-terratest` framework with SDK verification for Lambda, CloudWatch, IAM, SQS, and KMS.
 
 **GCP pattern:**
 ```go
