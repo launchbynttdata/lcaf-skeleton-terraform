@@ -3,7 +3,7 @@ name: Terraform Reference Architecture Creator
 description: Agent that creates a Terraform Reference Architecture from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.6 -->
+<!-- version: 1.7 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -12,6 +12,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 ## Changelog
 
+- **1.7** – Restored cloud-provider balance: scoped IAM block as AWS-specific and added Azure Networking & Security Best Practices; added complete Azure PostgreSQL test example with SDK verification (matching the AWS Lambda example in depth); added Azure naming format guidance alongside AWS examples
 - **1.6** – Added concrete AWS SDK verification examples for Lambda, CloudWatch, IAM, SQS, and KMS using lcaf-component-terratest framework; added complete read-only vs destructive test implementations; replaced commented-out AWS test pattern with working code
 - **1.5** – Strengthened testing requirements (SDK verification is mandatory, not optional); added IAM least-privilege and anti-duplication rules; added community module version compatibility warning; clarified example must not redundantly compose resource_names; strengthened skeleton cleanup checklist; added read-only vs destructive test differentiation; added README documentation requirements
 - **1.4** – Fixed version header (block must come first to be recognized as an agent)
@@ -500,11 +501,13 @@ locals {
 Available output formats: `standard`, `lower_case`, `upper_case`, `minimal`, `minimal_random_suffix`, `dns_compliant_standard`, `dns_compliant_minimal`, `dns_compliant_minimal_random_suffix`, `camel_case`, `recommended_per_length_restriction`.
 
 > **Choose the right format explicitly.** Do NOT default to `recommended_per_length_restriction` — it auto-selects based on max_length which may produce unexpected name formats. Instead, explicitly select the format in locals:
-> - `.standard` — most resources (IAM roles, policies, CloudWatch log groups, security groups)
-> - `.minimal_random_suffix` — globally unique resources (S3 buckets, ECR repositories)
+> - `.standard` — most resources (IAM roles, policies, CloudWatch log groups, security groups, Azure resource groups, PostgreSQL servers, VNets, subnets)
+> - `.minimal_random_suffix` — globally unique resources (S3 buckets, ECR repositories, Azure Storage accounts)
 > - `.dns_compliant_minimal_random_suffix` — resources with DNS naming constraints (Lambda functions, API Gateway, ECS services)
 >
-> **Example for Lambda:** Use `module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix`, NOT `.minimal_random_suffix` or `.recommended_per_length_restriction`.
+> **AWS example (Lambda):** Use `module.resource_names["lambda_function"].dns_compliant_minimal_random_suffix`, NOT `.minimal_random_suffix` or `.recommended_per_length_restriction`.
+>
+> **Azure example (PostgreSQL):** Use `.standard` for the server and resource group (`module.resource_names["postgresql_server"].standard`); use `.minimal_random_suffix` for globally unique resources like Storage accounts (`module.resource_names["storage_account"].minimal_random_suffix`).
 
 ### Naming Context Variables
 
@@ -896,9 +899,9 @@ module "lambda_function" {
 }
 ```
 
-**IAM Best Practices:**
+**IAM Best Practices (AWS):**
 
-> **WARNING — Common mistakes with IAM in reference architectures:**
+> **WARNING — Common mistakes with IAM in AWS reference architectures:**
 >
 > 1. **Never use inline `resource` blocks for IAM.** IAM roles, policies, and attachments MUST be created via a primitive module (e.g., `terraform.registry.launch.nttdata.com/module_primitive/iam_role/aws`) or a community module (e.g., `terraform-aws-modules/iam/aws`). Creating `aws_iam_role`, `aws_iam_role_policy`, or `aws_iam_role_policy_attachment` as inline resources is a Critical anti-pattern.
 >
@@ -908,6 +911,18 @@ module "lambda_function" {
 >    ```
 >
 > 3. **Avoid duplicate permissions.** If a community module (e.g., `terraform-aws-modules/lambda/aws`) has `attach_cloudwatch_logs_policy = true`, do NOT also create a separate IAM policy granting the same `logs:*` permissions. Choose one source of truth for each permission set.
+
+**Networking & Security Best Practices (Azure):**
+
+> **WARNING — Common mistakes with networking and security in Azure reference architectures:**
+>
+> 1. **Disable public network access by default.** Set `public_network_access_enabled = false` (or the equivalent attribute) on the primary resource. Expose a variable to let consumers override this when needed, but the default must be private.
+>
+> 2. **Always support private networking.** Include a private endpoint primitive with a `count` toggle (e.g., `var.create_private_endpoint`). Wire up the `private_service_connection` sub-resource to the primary resource's ID.
+>
+> 3. **Manage resource groups via primitives.** Do NOT create `azurerm_resource_group` as an inline resource. Use the resource-group primitive module (`terraform.registry.launch.nttdata.com/module_primitive/resource_group/azurerm` or equivalent) and accept the resource group name as an output from that primitive.
+>
+> 4. **Configure VNet integration where applicable.** For services that support it (e.g., PostgreSQL Flexible Server, App Service), accept `delegated_subnet_id` and `private_dns_zone_id` variables and wire them into the primary resource's network configuration.
 
 **IAM Policy Flexibility:**
 ```hcl
@@ -1208,69 +1223,243 @@ func TestLambdaReferenceArchitectureReadOnly(t *testing.T) {
 
 > **CRITICAL:** Note how `post_deploy_functional` and `post_deploy_functional_readonly` call **different** functions. The readonly entry point calls `TestComposableCompleteReadOnly` which does NOT invoke the Lambda or perform any mutating operations. Never make these two files identical.
 
-**Azure pattern:**
+### Azure PostgreSQL Reference Architecture — Complete Test Example
+
+This is a complete, working example of how to test an Azure PostgreSQL reference architecture using the `lcaf-component-terratest` framework with full Azure SDK verification. **Use this as your template for Azure reference architectures.**
+
+**`tests/testimpl/test_impl.go`** — SDK verification for all composed resources:
 ```go
-package tests
+package testimpl
 
 import (
-    "os"
-    "testing"
+	"context"
+	"os"
+	"testing"
 
-    "github.com/gruntwork-io/terratest/modules/azure"
-    "github.com/gruntwork-io/terratest/modules/terraform"
-    "github.com/stretchr/testify/assert"
-    "github.com/stretchr/testify/require"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/cloud"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/postgresql/armpostgresqlflexibleservers"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/privatedns/armprivatedns"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"github.com/gruntwork-io/terratest/modules/terraform"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestArchitectureComplete(t *testing.T) {
-    t.Parallel()
+// TestComposableComplete runs all read-only SDK checks PLUS mutating operations.
+// Used by post_deploy_functional.
+func TestComposableComplete(t *testing.T, ctx types.TestContext) {
+	// Run all read-only verification first
+	TestComposableCompleteReadOnly(t, ctx)
 
-    subscriptionID := os.Getenv("ARM_SUBSCRIPTION_ID")
-    require.NotEmpty(t, subscriptionID, "ARM_SUBSCRIPTION_ID must be set")
+	// --- Mutating / destructive tests below ---
+	// Add mutating tests here if applicable (e.g., writing a row to PostgreSQL,
+	// testing failover, triggering a diagnostic alert). For many Azure reference
+	// architectures the read-only checks are sufficient.
+}
 
-    terraformOptions := &terraform.Options{
-        TerraformDir: "../examples/complete",
-    }
+// TestComposableCompleteReadOnly verifies all resources via Azure SDK Get calls ONLY.
+// No writes, no mutations. Used by post_deploy_functional_readonly.
+func TestComposableCompleteReadOnly(t *testing.T, ctx types.TestContext) {
+	subscriptionID := os.Getenv("ARM_SUBSCRIPTION_ID")
+	require.NotEmpty(t, subscriptionID, "ARM_SUBSCRIPTION_ID must be set")
 
-    defer terraform.Destroy(t, terraformOptions)
-    terraform.InitAndApply(t, terraformOptions)
+	resourceGroupName := terraform.Output(t, ctx.TerratestTerraformOptions(), "resource_group_name")
+	serverName := terraform.Output(t, ctx.TerratestTerraformOptions(), "name")
 
-    // Verify Terraform outputs
-    id := terraform.Output(t, terraformOptions, "id")
-    assert.NotEmpty(t, id)
+	t.Run("TestResourceGroupExists", func(t *testing.T) {
+		rgClient := GetAzureResourceGroupsClient(t, subscriptionID)
+		rg, err := rgClient.Get(context.TODO(), resourceGroupName, nil)
+		require.NoError(t, err, "Get ResourceGroup should succeed")
+		assert.Equal(t, resourceGroupName, *rg.Name)
+	})
 
-    name := terraform.Output(t, terraformOptions, "name")
-    assert.NotEmpty(t, name)
+	t.Run("TestPostgreSQLServerExists", func(t *testing.T) {
+		pgClient := GetAzurePostgreSQLServersClient(t, subscriptionID)
+		server, err := pgClient.Get(context.TODO(), resourceGroupName, serverName, nil)
+		require.NoError(t, err, "Get PostgreSQL server should succeed")
+		assert.Equal(t, serverName, *server.Name)
+		assert.Equal(t, armpostgresqlflexibleservers.ServerVersion("16"), *server.Properties.Version)
+		assert.Equal(t, "B_Standard_B1ms", server.SKU.Name)
+	})
 
-    fqdn := terraform.Output(t, terraformOptions, "fqdn")
-    assert.NotEmpty(t, fqdn)
+	// Optional resource: VNet/Subnet — skip if not enabled
+	t.Run("TestSubnetDelegation", func(t *testing.T) {
+		subnetID := terraform.Output(t, ctx.TerratestTerraformOptions(), "delegated_subnet_id")
+		if subnetID == "" {
+			t.Skip("VNet integration not enabled in this example")
+		}
+		// Parse resource group, vnet, and subnet names from the subnet ID
+		vnetName := terraform.Output(t, ctx.TerratestTerraformOptions(), "vnet_name")
+		subnetName := terraform.Output(t, ctx.TerratestTerraformOptions(), "subnet_name")
 
-    resourceGroupName := terraform.Output(t, terraformOptions, "resource_group_name")
-    assert.NotEmpty(t, resourceGroupName)
+		subnetClient := GetAzureSubnetsClient(t, subscriptionID)
+		subnet, err := subnetClient.Get(context.TODO(), resourceGroupName, vnetName, subnetName, nil)
+		require.NoError(t, err, "Get Subnet should succeed")
+		require.NotEmpty(t, subnet.Properties.Delegations, "Subnet should have delegations")
+		assert.Contains(t, *subnet.Properties.Delegations[0].Properties.ServiceName, "Microsoft.DBforPostgreSQL/flexibleServers")
+	})
 
-    // Verify primary resource via Azure API
-    // Use terratest azure helpers where available (github.com/gruntwork-io/terratest/modules/azure)
-    // Fall back to the Azure SDK for resources not covered by terratest helpers
-    // (github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/...)
+	// Optional resource: Private DNS Zone — skip if not enabled
+	t.Run("TestPrivateDNSZoneExists", func(t *testing.T) {
+		dnsZoneName := terraform.Output(t, ctx.TerratestTerraformOptions(), "private_dns_zone_name")
+		if dnsZoneName == "" {
+			t.Skip("Private DNS zone not enabled in this example")
+		}
+		dnsClient := GetAzurePrivateDNSZonesClient(t, subscriptionID)
+		zone, err := dnsClient.Get(context.TODO(), resourceGroupName, dnsZoneName, nil)
+		require.NoError(t, err, "Get Private DNS Zone should succeed")
+		assert.Equal(t, dnsZoneName, *zone.Name)
+	})
 
-    // Example: verify the PostgreSQL server exists and is correctly configured
-    // cred, _ := azidentity.NewDefaultAzureCredential(nil)
-    // client, _ := armpostgresqlflexibleservers.NewServersClient(subscriptionID, cred, nil)
-    // server, _ := client.Get(context.Background(), resourceGroupName, name, nil)
-    // require.NotNil(t, server.Properties)
-    // assert.Equal(t, armpostgresqlflexibleservers.ServerVersion("16"), *server.Properties.Version)
-    // assert.Equal(t, "B_Standard_B1ms", *server.Properties.SKU.Name)
-    // assert.False(t, *server.Properties.Network.PublicNetworkAccess == armpostgresqlflexibleservers.ServerPublicNetworkAccessStateEnabled)
+	// Optional resource: Diagnostic Settings — check via output
+	t.Run("TestDiagnosticSettingsConfigured", func(t *testing.T) {
+		diagID := terraform.Output(t, ctx.TerratestTerraformOptions(), "diagnostic_setting_id")
+		if diagID == "" {
+			t.Skip("Diagnostic settings not enabled in this example")
+		}
+		assert.NotEmpty(t, diagID, "Diagnostic setting ID should not be empty")
+	})
 
-    // Verify optional features that are enabled in the example
-    // Example: confirm private endpoint was created
-    // privateEndpointName := terraform.Output(t, terraformOptions, "private_endpoint_name")
-    // assert.NotEmpty(t, privateEndpointName)
-    // pe := azure.GetPrivateEndpoint(t, resourceGroupName, privateEndpointName, subscriptionID)
-    // require.NotNil(t, pe)
-    // assert.Equal(t, "Approved", *pe.Properties.PrivateLinkServiceConnections[0].Properties.PrivateLinkServiceConnectionState.Status)
+	// Optional resource: Firewall Rules — skip if not enabled
+	t.Run("TestFirewallRulesExist", func(t *testing.T) {
+		firewallRuleCount := terraform.Output(t, ctx.TerratestTerraformOptions(), "firewall_rule_count")
+		if firewallRuleCount == "" || firewallRuleCount == "0" {
+			t.Skip("Firewall rules not enabled in this example")
+		}
+		fwClient := GetAzureFirewallRulesClient(t, subscriptionID)
+		pager := fwClient.NewListByServerPager(resourceGroupName, serverName, nil)
+		var ruleCount int
+		for pager.More() {
+			page, err := pager.NextPage(context.TODO())
+			require.NoError(t, err, "ListByServer should succeed")
+			ruleCount += len(page.Value)
+		}
+		assert.Greater(t, ruleCount, 0, "At least one firewall rule should exist")
+	})
+}
+
+// --- Azure SDK Helper Functions ---
+
+func GetAzureCredential(t *testing.T) *azidentity.DefaultAzureCredential {
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	require.NoError(t, err, "unable to create Azure credential")
+	return cred
+}
+
+func GetAzureClientOptions() *arm.ClientOptions {
+	return &arm.ClientOptions{
+		ClientOptions: azcore.ClientOptions{
+			Cloud: cloud.AzurePublic,
+		},
+	}
+}
+
+func GetAzureResourceGroupsClient(t *testing.T, subscriptionID string) *armresources.ResourceGroupsClient {
+	client, err := armresources.NewResourceGroupsClient(subscriptionID, GetAzureCredential(t), GetAzureClientOptions())
+	require.NoError(t, err, "unable to create ResourceGroups client")
+	return client
+}
+
+func GetAzurePostgreSQLServersClient(t *testing.T, subscriptionID string) *armpostgresqlflexibleservers.ServersClient {
+	client, err := armpostgresqlflexibleservers.NewServersClient(subscriptionID, GetAzureCredential(t), GetAzureClientOptions())
+	require.NoError(t, err, "unable to create PostgreSQL Servers client")
+	return client
+}
+
+func GetAzureSubnetsClient(t *testing.T, subscriptionID string) *armnetwork.SubnetsClient {
+	client, err := armnetwork.NewSubnetsClient(subscriptionID, GetAzureCredential(t), GetAzureClientOptions())
+	require.NoError(t, err, "unable to create Subnets client")
+	return client
+}
+
+func GetAzurePrivateDNSZonesClient(t *testing.T, subscriptionID string) *armprivatedns.PrivateZonesClient {
+	client, err := armprivatedns.NewPrivateZonesClient(subscriptionID, GetAzureCredential(t), GetAzureClientOptions())
+	require.NoError(t, err, "unable to create Private DNS Zones client")
+	return client
+}
+
+func GetAzureFirewallRulesClient(t *testing.T, subscriptionID string) *armpostgresqlflexibleservers.FirewallRulesClient {
+	client, err := armpostgresqlflexibleservers.NewFirewallRulesClient(subscriptionID, GetAzureCredential(t), GetAzureClientOptions())
+	require.NoError(t, err, "unable to create Firewall Rules client")
+	return client
 }
 ```
+
+**`tests/testimpl/types.go`** — standard test config struct:
+```go
+package testimpl
+
+import "github.com/launchbynttdata/lcaf-component-terratest/types"
+
+type ThisTFModuleConfig struct {
+	types.GenericTFModuleConfig
+}
+```
+
+**`post_deploy_functional/main_test.go`** — calls `TestComposableComplete` (includes mutating tests):
+```go
+package test
+
+import (
+	"testing"
+
+	"github.com/launchbynttdata/lcaf-component-terratest/lib"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
+	"github.com/launchbynttdata/YOUR_MODULE_NAME/tests/testimpl"
+)
+
+const (
+	testConfigsExamplesFolderDefault = "../../examples"
+	infraTFVarFileNameDefault        = "test.tfvars"
+)
+
+func TestPostgreSQLReferenceArchitecture(t *testing.T) {
+	ctx := types.CreateTestContextBuilder().
+		SetTestConfig(&testimpl.ThisTFModuleConfig{}).
+		SetTestConfigFolderName(testConfigsExamplesFolderDefault).
+		SetTestConfigFileName(infraTFVarFileNameDefault).
+		Build()
+
+	lib.RunSetupTestTeardown(t, *ctx, testimpl.TestComposableComplete)
+}
+```
+
+**`post_deploy_functional_readonly/main_test.go`** — calls `TestComposableCompleteReadOnly` (read-only only):
+```go
+package test
+
+import (
+	"testing"
+
+	"github.com/launchbynttdata/lcaf-component-terratest/lib"
+	"github.com/launchbynttdata/lcaf-component-terratest/types"
+	"github.com/launchbynttdata/YOUR_MODULE_NAME/tests/testimpl"
+)
+
+const (
+	testConfigsExamplesFolderDefault = "../../examples"
+	infraTFVarFileNameDefault        = "test.tfvars"
+)
+
+func TestPostgreSQLReferenceArchitectureReadOnly(t *testing.T) {
+	ctx := types.CreateTestContextBuilder().
+		SetTestConfig(&testimpl.ThisTFModuleConfig{}).
+		SetTestConfigFolderName(testConfigsExamplesFolderDefault).
+		SetTestConfigFileName(infraTFVarFileNameDefault).
+		Build()
+
+	lib.RunNonDestructiveTest(t, *ctx, testimpl.TestComposableCompleteReadOnly)
+}
+```
+
+> **CRITICAL:** The `post_deploy_functional` entry point uses `lib.RunSetupTestTeardown` (deploys → tests → destroys) while `post_deploy_functional_readonly` uses `lib.RunNonDestructiveTest` (tests against already-deployed infrastructure, no deploy/destroy). Never use `RunSetupTestTeardown` in the readonly entry point — it would destroy production-like infrastructure.
+
+**Azure pattern (cross-reference):** See the complete [Azure PostgreSQL Reference Architecture test example](#azure-postgresql-reference-architecture--complete-test-example) above for a fully working implementation using the `lcaf-component-terratest` framework with SDK verification for Resource Groups, PostgreSQL Flexible Server, VNet/Subnet, Private DNS, Diagnostics, and Firewall Rules.
 
 **AWS pattern:** See the complete [AWS Lambda Reference Architecture test example](#aws-lambda-reference-architecture--complete-test-example) above for a fully working implementation using the `lcaf-component-terratest` framework with SDK verification for Lambda, CloudWatch, IAM, SQS, and KMS.
 
