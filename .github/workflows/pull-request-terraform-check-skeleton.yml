@@ -1,0 +1,57 @@
+# Remove this file entirely after copying to your own repository
+name: Check Skeleton Tool Compatibility
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: "Check Skeleton Tool Compatibility"
+
+    if: github.event.pull_request.head.repo.full_name == 'launchbynttdata/lcaf-skeleton-terraform'
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@ff7abcd0c3c05ccf6adc123a8cd1fd4fb30fb493
+
+      - name: Setup asdf
+        # We use the 'setup' variant of this action, because we have some custom behavior in
+        # our .tool-versions file and Makefile to install plugins from outside the default registry.
+        uses: asdf-vm/actions/setup@b7bcd026f18772e44fe1026d729e1611cc435d47
+
+      - uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306
+        # If we've cached the asdf tools, restore them based on the hash of the .tool-versions file.
+        name: Restore cached asdf tools
+        id: cache
+        with:
+          path: ~/.asdf
+          key: ${{ runner.os }}-tool-versions-${{ hashFiles('.tool-versions') }}
+
+      - name: Setup Repository for Checks
+        # Ensure the 'repo' tool is installed, set up git to make the Makefile happy, and then configure to clone LCAF.
+        shell: bash
+        run: |
+          mkdir -p ~/.local/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.local/bin/repo
+          chmod +x ~/.local/bin/repo
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          set -x
+          git config user.name "GitHub Actions"
+          git config user.email "noreply@launch.nttdata.com"
+          make configure
+
+      - name: "make lint"
+        run: |
+          make lint
+
+      - name: "make test"
+        run: |
+          make test
