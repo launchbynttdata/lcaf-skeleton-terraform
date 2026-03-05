@@ -3,7 +3,7 @@ name: Terraform Reference Architecture Creator
 description: Agent that creates a Terraform Reference Architecture from a skeleton repository to meet our standards.
 ---
 
-<!-- version: 1.9 -->
+<!-- version: 2.0 -->
 
 # AI Agent Guide for Reference Architecture Modules
 
@@ -12,6 +12,7 @@ description: Agent that creates a Terraform Reference Architecture from a skelet
 
 ## Changelog
 
+- **2.0** – Second reference-lambda trial round (16 trials, 4 models × 4 commits): fixed bug in readonly test example (was `RunSetupTestTeardown`, now correctly `RunNonDestructiveTest`); added skeleton transformation verification gate requiring self-check that no skeleton resources remain; added Lambda source code directory requirement for examples; added CloudWatch log group duplication warning when using `terraform-aws-modules/lambda/aws`; added module source format guidance (registry paths not `git::` URLs); added output naming convention (consistent prefixes); standardized feature flag variable naming on `create_*` not `enable_*`; added explicit readonly test anti-pattern examples showing the three most common mistakes; reinforced `assert.NotEmpty` ban with stronger language
 - **1.9** – Reference-lambda trial feedback: strengthened example `resource_names` anti-pattern warning with explicit "the example MUST NOT" language and code diff; added `providers.tf` ban for examples (conflicts with auto-generated `provider.tf`); added `RunNonDestructiveTest` requirement to skeleton cleanup checklist; added community module version compatibility pre-check step with concrete version examples; strengthened IAM inline resource ban with `aws_kms_alias` as an additional example; added KMS key ID vs ARN clarification; strengthened skeleton cleanup checklist with explicit go.mod, test import, and test function rename items elevated to mandatory; added per-resource SDK verification checklist for Lambda architectures; added duplicate IAM permissions warning for `attach_cloudwatch_logs_policy`
 - **1.8** – Strengthened test assertion specificity: banned `assert.NotEmpty` for attributes with known expected values, added explicit `assert.Equal` examples deriving values from `test.tfvars`; strengthened functional vs readonly test differentiation with concrete write-operation requirements; mandated KMS encryption in examples and tests; added README verification checklist requiring cross-referencing against actual code; added `name`/`name_prefix` mutual exclusion as a variable validation example; added explicit `terraform-docs` or manual copy-paste requirement for README tables
 - **1.7** – Restored cloud-provider balance: scoped IAM block as AWS-specific and added Azure Networking & Security Best Practices; added complete Azure PostgreSQL test example with SDK verification (matching the AWS Lambda example in depth); added Azure naming format guidance alongside AWS examples
@@ -1053,9 +1054,9 @@ Reference architecture tests MUST cover ALL of the following:
 >
 > Do NOT skip any of these if the resource is created in the example. A test file with only Lambda verification but no DLQ/KMS/CloudWatch/IAM SDK calls will be flagged as High severity.
 
-> **CRITICAL — Test Assertion Specificity (most common failure across all models):**
+> **CRITICAL — Test Assertion Specificity (most common failure across ALL models in ALL trial rounds):**
 >
-> **Do NOT use `assert.NotEmpty` for configuration attributes that have known expected values.** This is the single most common mistake. When the expected value can be derived from `test.tfvars` or the module defaults, you MUST use `assert.Equal` with the specific expected value.
+> **`assert.NotEmpty` is BANNED for configuration attributes that have known expected values.** Despite explicit instructions, 3/16 trials in the latest round still used `assert.NotEmpty` for values like Runtime, MemorySize, and Timeout that are known from `test.tfvars`. This is a zero-tolerance rule. When the expected value can be derived from `test.tfvars` or the module defaults, you MUST use `assert.Equal` with the specific expected value. Before writing ANY assertion, check: "Do I know what value this should be?" If yes, use `assert.Equal`.
 >
 > **BAD — will be flagged as High severity:**
 > ```go
@@ -1100,8 +1101,39 @@ The `post_deploy_functional` and `post_deploy_functional_readonly` test director
   - If no obvious write operation exists for the resource type, document why in a code comment
 - **`post_deploy_functional_readonly`**: Must contain ONLY read operations — no invocations, no writes, no mutations. This test runs in environments where destructive operations are not permitted. It MUST still verify security-relevant configuration (encryption, access policies) via SDK `Get`/`Describe` calls.
 
-**The two test files must NOT be identical or near-identical (most common test failure in trials).** If the only difference is the function name, that is a High severity issue.
+**The two test files must NOT be identical or near-identical (most common test failure across ALL 16 reference-lambda trials).** If the only difference is the function name, that is a High severity issue.
+
+> **WARNING — The three most common readonly test mistakes (found in 6/16 trials):**
 >
+> **Mistake 1:** Using `lib.RunSetupTestTeardown` in the readonly test:
+> ```go
+> // WRONG — this deploys and destroys infrastructure, defeating the purpose
+> lib.RunSetupTestTeardown(t, *ctx, testimpl.TestComposableCompleteReadOnly)
+> ```
+>
+> **Mistake 2:** Calling `TestComposableComplete` (the mutating function) from the readonly entry point:
+> ```go
+> // WRONG — TestComposableComplete includes write operations like lambda.Invoke
+> lib.RunNonDestructiveTest(t, *ctx, testimpl.TestComposableComplete)
+> ```
+>
+> **Mistake 3:** Copy-pasting the functional test file and only changing the function name:
+> ```go
+> // WRONG — identical to post_deploy_functional except the function name
+> func TestLambdaReferenceArchitectureReadOnly(t *testing.T) {
+>     // ... same setup ...
+>     lib.RunSetupTestTeardown(t, *ctx, testimpl.TestComposableComplete) // ← still wrong runner AND function
+> }
+> ```
+>
+> **CORRECT readonly test — both runner AND function must differ:**
+> ```go
+> func TestLambdaReferenceArchitectureReadOnly(t *testing.T) {
+>     // ... same setup ...
+>     lib.RunNonDestructiveTest(t, *ctx, testimpl.TestComposableCompleteReadOnly)
+> }
+> ```
+
 > **Mandatory differences between the two entry points:**
 >
 > | Aspect | `post_deploy_functional` | `post_deploy_functional_readonly` |
@@ -1324,11 +1356,11 @@ func TestLambdaReferenceArchitectureReadOnly(t *testing.T) {
 		SetTestConfigFileName(infraTFVarFileNameDefault).
 		Build()
 
-	lib.RunSetupTestTeardown(t, *ctx, testimpl.TestComposableCompleteReadOnly)
+	lib.RunNonDestructiveTest(t, *ctx, testimpl.TestComposableCompleteReadOnly)
 }
 ```
 
-> **CRITICAL:** Note how `post_deploy_functional` and `post_deploy_functional_readonly` call **different** functions. The readonly entry point calls `TestComposableCompleteReadOnly` which does NOT invoke the Lambda or perform any mutating operations. Never make these two files identical.
+> **CRITICAL:** Note how `post_deploy_functional` and `post_deploy_functional_readonly` call **different** functions AND **different runners**. The readonly entry point uses `lib.RunNonDestructiveTest` (NOT `lib.RunSetupTestTeardown`) and calls `TestComposableCompleteReadOnly` (NOT `TestComposableComplete`). Never make these two files identical.
 
 ### Azure PostgreSQL Reference Architecture — Complete Test Example
 
@@ -1746,6 +1778,15 @@ module "lambda_reference" {
 }
 ```
 
+> **AWS Lambda examples — you MUST create the `lambda_code/` directory** with an actual handler file (e.g., `examples/complete/lambda_code/index.py`). Without this, `source_path = "${path.module}/lambda_code"` will fail at apply time. Include a minimal working handler:
+> ```python
+> # examples/complete/lambda_code/index.py
+> def lambda_handler(event, context):
+>     return {"statusCode": 200, "body": "OK"}
+> ```
+
+> **Output naming convention:** Use a consistent prefix for all outputs related to the same resource. For AWS Lambda, prefix all Lambda-related outputs with `lambda_` (e.g., `lambda_function_name`, `lambda_function_arn`, `lambda_role_arn`, `lambda_role_name`). Do NOT mix prefixes like `function_name` and `lambda_function_arn` in the same module. Match the output names used in the community module where applicable (e.g., `terraform-aws-modules/lambda/aws` uses `lambda_function_name`, `lambda_role_arn`).
+
 ## Best Practices
 
 ### 1. Composition Over Configuration
@@ -1853,6 +1894,8 @@ module "s3_bucket" {
 }
 ```
 
+> **WARNING — CloudWatch Log Group duplication (AWS Lambda):** The `terraform-aws-modules/lambda/aws` community module creates a CloudWatch Log Group (`/aws/lambda/<function_name>`) internally by default. Do NOT also create a separate `aws_cloudwatch_log_group` resource or module for the same Lambda function — this causes a Terraform conflict ("resource already exists"). If you need to customize the log group (retention, KMS), use the community module's built-in variables (`cloudwatch_logs_retention_in_days`, `cloudwatch_logs_kms_key_arn`) instead of creating a duplicate.
+
 ### 5. Handle Provider Differences
 ```hcl
 # Azure - explicit location
@@ -1864,7 +1907,21 @@ variable "location" {
 data "aws_region" "current" {}
 ```
 
-### 6. Version Constraints
+### 6. Version Constraints and Module Source Format
+
+**Module source format — use registry paths, NOT `git::` URLs:**
+```hcl
+# CORRECT — internal primitives use the LCAF Terraform registry
+source  = "terraform.registry.launch.nttdata.com/module_primitive/postgresql_server/azurerm"
+version = "~> 1.1"
+
+# CORRECT — community modules use the public Terraform registry
+source  = "terraform-aws-modules/lambda/aws"
+version = "~> 7.4"
+
+# WRONG — do NOT use git:: URLs
+# source = "git::https://github.com/terraform-aws-modules/terraform-aws-lambda.git?ref=v7.4.0"
+```
 
 Pin to minor versions of primitives:
 ```hcl
@@ -1975,6 +2032,9 @@ module "configuration" {
 - Use `ListRolePolicies` instead of `ListAttachedRolePolicies` for IAM verification
 - Pass KMS key ID (UUID) where an ARN is expected (e.g., `cloudwatch_logs_kms_key_id`)
 - Attach both `AWSLambdaBasicExecutionRole` AND an inline logging policy (duplicate permissions)
+- Create a separate CloudWatch Log Group module/resource when using `terraform-aws-modules/lambda/aws` — that community module already creates `/aws/lambda/<function_name>` internally. Adding your own causes a duplicate resource conflict. Only create a separate log group if you are NOT using the community Lambda module.
+- Use `git::` URLs for module sources (e.g., `git::https://github.com/...`) — use registry paths instead (`terraform-aws-modules/lambda/aws` for public, `terraform.registry.launch.nttdata.com/module_primitive/.../aws` for internal)
+- Name feature flag variables with `enable_*` prefix — use `create_*` instead (e.g., `create_dlq`, `create_kms_key`, `create_lambda_function_url`) to match the Terraform ecosystem convention used by community modules
 
 **Do:**
 - Compose primitives
@@ -2026,12 +2086,18 @@ When asked to create a new reference architecture:
    - Add monitoring last
    - Do NOT create inline `resource` blocks — use primitive or community modules for everything including KMS aliases, IAM resources, etc.
 
-5. **Test**
+5. **Verify skeleton transformation is complete** (mandatory gate before testing)
+   - Search all `.tf` files for `random_string`, `random_pet`, `random_integer` resources from the skeleton — if any remain without a clear purpose in the new module, the transformation is incomplete
+   - Search for `skeleton` or `lcaf-skeleton` in all files — none should remain
+   - Confirm that `main.tf` contains the actual module composition (primitives/community modules), not skeleton placeholder resources
+   - If ANY skeleton artifacts remain, stop and fix them before proceeding to testing
+
+6. **Test**
    - Create complete example
    - Write Terratest
    - Verify all optional features can be enabled/disabled
 
-6. **Document** (this step is mandatory and must be cross-referenced against code)
+7. **Document** (this step is mandatory and must be cross-referenced against code)
    - Explain the pattern being implemented
    - Document all optional features
    - Provide usage examples
@@ -2061,8 +2127,10 @@ Based on comparing Azure and AWS modules, older modules may need:
 
 When transforming the skeleton into a new module, complete ALL of these steps. **Every item is mandatory** — skipping any item will be flagged as a High or Medium severity issue in code review.
 
+> **MANDATORY VERIFICATION GATE:** After completing all cleanup steps, run a self-check: search all `.tf` and `.go` files for `skeleton`, `random_string` (from skeleton), `TEMPLATED_README`, and `lcaf-skeleton-terraform`. If ANY match is found (except in `go.sum`), the transformation is incomplete. Fix before proceeding.
+
 ### Files to Remove or Transform
-- [ ] **TEMPLATED_README.md** → **DELETE this file** after incorporating relevant content into README.md. Do NOT leave it in the repository.
+- [ ] **TEMPLATED_README.md** → **DELETE this file.** This was missed in ALL 4 sonnet-4.5 trials. Do NOT leave it in the repository under any circumstances. Run `rm TEMPLATED_README.md` or `git rm TEMPLATED_README.md`.
 - [ ] **Only one Terraform Check CI workflow can be present** (`.github/workflows/pull-request-terraform-check-*.yml`) → **DELETE** the workflow file for the provider you are NOT using. For an AWS module, delete `pull-request-terraform-check-azure.yml`. For an Azure module, delete `pull-request-terraform-check-aws.yml`. **This is the most commonly missed cleanup step — it was missed in over 60% of trials. Do this FIRST.**
 - [ ] **`examples/with_cake/`** → Delete skeleton example directory
 
