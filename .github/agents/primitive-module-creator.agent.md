@@ -572,6 +572,7 @@ examples/complete/
 ├── outputs.tf       # Pass-through outputs
 ├── provider.tf     # Provider configuration, delivered by the Makefile. Don't touch this file.
 └── README.md        # Example documentation
+└── versions.tf
 ```
 
 **Example main.tf pattern:**
