@@ -570,7 +570,7 @@ examples/complete/
 ├── main.tf          # Module usage
 ├── variables.tf     # Example variables
 ├── outputs.tf       # Pass-through outputs
-├── providers.tf     # Provider configuration
+├── provider.tf     # Provider configuration, delivered by the Makefile. Don't touch this file.
 └── README.md        # Example documentation
 ```
 
