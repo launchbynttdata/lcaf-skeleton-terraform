@@ -103,7 +103,7 @@ tf-<provider>-module_primitive-<resource>/
 │       ├── main.tf
 │       ├── variables.tf
 │       ├── outputs.tf
-│       ├── providers.tf    # Provider configuration
+│       ├── provider.tf    # Provider configuration, delivered by the Makefile. Don't touch this file.
 │       └── README.md
 ├── tests/                  # Note: "tests" not "test"
 │   ├── complete_test.go    # REQUIRED: Terratest
